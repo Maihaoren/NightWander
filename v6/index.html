@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NightWander</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+
+    <!-- ================= 左列：物品栏 / 地图 ================= -->
+    <aside class="col col--left">
+
+      <section class="panel panel--inventory">
+        <h2 class="panel__title panel__title--inventory" id="inventory-title">
+          <span data-text="panel.inventory"></span>
+          <span class="panel__count" id="inventory-count"></span>
+        </h2>
+        <div class="panel__body" id="inventory"></div>
+      </section>
+
+      <section class="panel panel--map">
+        <h2 class="panel__title" data-text="panel.map"></h2>
+        <div class="panel__body panel__body--flush">
+          <svg id="map" class="map"
+               viewBox="0 0 900 600"
+               preserveAspectRatio="xMidYMid meet"
+               role="img" aria-label="地图"></svg>
+        </div>
+      </section>
+
+    </aside>
+
+    <!-- ================= 右列：画面 / 状态栏 / 终端 ================= -->
+    <main class="col col--right">
+
+      <section class="panel panel--scene">
+        <div class="panel__titlebar">
+          <h2 class="panel__title panel__title--flat" data-text="panel.scene"></h2>
+          <button id="theme-toggle" class="theme-toggle" type="button"></button>
+        </div>
+        <div class="panel__body panel__body--center">
+          <pre id="scene" class="scene-art" aria-live="polite"></pre>
+        </div>
+      </section>
+
+      <section class="panel panel--status">
+        <h2 class="panel__title panel__title--inline" data-text="panel.status"></h2>
+        <div class="panel__body status" id="status">
+          <div class="status__cell status__cell--day"></div>
+          <div class="status__cell status__cell--stamina"></div>
+          <div class="status__cell status__cell--battery"></div>
+          <div class="status__cell status__cell--time"></div>
+        </div>
+      </section>
+
+      <section class="panel panel--terminal">
+        <h2 class="panel__title panel__title--term" data-text="panel.terminal"></h2>
+        <div class="panel__body panel__body--terminal">
+
+          <!-- 日志输出区 -->
+          <div class="terminal__output" id="term-output"></div>
+
+          <!-- 按钮行：日志下方、输入框上方 -->
+          <div class="terminal__buttons" id="term-buttons"></div>
+
+          <!-- 输入框 -->
+          <form class="terminal__form" id="term-form" autocomplete="off">
+            <span class="terminal__prompt">&gt;</span>
+            <input class="terminal__input" id="term-input" type="text" spellcheck="false">
+          </form>
+
+        </div>
+      </section>
+
+    </main>
+
+  </div>
+
+  <!-- 弹窗容器（野外拾取替换 / 存档导出导入） -->
+  <div id="modal-root" hidden></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
