@@ -72,6 +72,7 @@ export const UI = {
   saveTitle: '存档数据（Base64）',
   saveImported: '存档已导入。',
   saveInvalid: '存档无效',
+  saveTooOld: '存档版本过旧，无法加载',
   saveConfirm: '导入会覆盖当前进度，确定继续吗？',
   copy: '复制到剪贴板',
   copied: '已复制到剪贴板。',
