@@ -29,6 +29,15 @@ export const UI = {
   },
   slotName: { hand: '手持', torso: '上身', legs: '下身', back: '背部' },
 
+  /* 安全屋专属选项（由 main.js 插到选项列表最前） */
+  shelter: {
+    overnight: '过夜（进入下一天）',
+    stay: '稍作停留',
+    stayReply: '你在安全屋里坐下，把身上的东西一件件理了理。夜还长。',
+  },
+  notHere: '你现在不在这里。',
+  backToWorld: '返回大地图',
+
   terminalPlaceholder: '输入序号或命令后回车',
   echo: (input) => `> ${input}`,
   arrived: (name) => `========== 已经到达 ${name} ==========`,

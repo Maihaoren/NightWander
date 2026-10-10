@@ -6,10 +6,12 @@
 
 import {
   STAMINA_MIN, BATTERY_MAX, FORCE_HOME_PENALTY, MOVE_STAMINA_COST, TICK_INTERVAL_MS, DEBUG_CONSOLE,
+  SHELTER_OVERNIGHT_COST_SEC,
 } from './config.js';
 import { UI, SCENES, ITEMS } from './texts.js';
 import {
-  initMap, refreshMap, isClickable, getNode, computeEdgeCost, getPickableItems, HOME_ID, GOAL_ID, NODES,
+  initMap, refreshMap, setMapView, getNode, getNodes, getRegion, computeClickable, computeEdgeCost,
+  getCrossRegionTarget, isShelter, HOME_ID,
 } from './map.js';
 import * as terminal from './terminal.js';
 import * as game from './state.js';
@@ -20,8 +22,24 @@ import * as debug from './debug.js';
 
 const THEME_KEY = 'nightwander:theme';
 
+/** 终点节点：首次到达即结束。旧版的 GOAL_ID 已随 map.js 重写移除，终点改为 area2 的旅者之石 */
+const GOAL2_ID = 'goal2';
+
 let nightEnded = false;      /* 本轮移动/选项期间是否刚好天亮了 */
 let sceneEl = null;
+
+/** 当前所在安全屋的储物键（形如 'area1:home'）；不在安全屋时返回 null */
+function currentShelterKey() {
+  const area = game.getCurrentArea();
+  const node = game.getCurrentNode();
+  return isShelter(area, node) ? game.makeShelterKey(area, node) : null;
+}
+
+/** 视图切换：同时改 state（进存档）与 map（真正重绘），两者不允许各走各的 */
+function switchMapView(view) {
+  game.setMapView(view);
+  setMapView(view);
+}
 
 /* ---------------- 静态文案 ---------------- */
 
@@ -108,10 +126,11 @@ function renderInventory() {
 
   const equipped = game.getEquipped();
   const pocket = game.getPocket();
-  const storage = game.getHomeStorage();
+  const shelterKey = currentShelterKey();
+  const storage = shelterKey ? game.getShelterStorage(shelterKey) : [];
   const capacity = inventory.computePocketCapacity(equipped);
   const full = pocket.length >= capacity;
-  const atHome = game.getCurrentNode() === HOME_ID;
+  const atHome = Boolean(shelterKey);
 
   count.textContent = UI.inventory.count(pocket.length, capacity, full);
   const hint = UI.inventory.sources(inventory.getPocketSources(equipped, UI.slotName));
@@ -132,10 +151,10 @@ function renderInventory() {
     });
   })));
 
-  /* 储物箱：只在家可见 */
+  /* 储物箱：只在安全屋可见 */
   if (atHome) {
     el.appendChild(section(
-      `${UI.inventory.storage} ${storage.length}/${game.getStorageCapacity()}`,
+      `${UI.inventory.storage} ${storage.length}/${game.getStorageCapacity(shelterKey)}`,
       storage.map((item) => {
         const plan = inventory.planTakeFromStorage(item, equipped, pocket);
         return itemButton(`${item.name}${plan.mode === 'equip' ? '（可装备）' : ''}`, {
@@ -156,12 +175,14 @@ function renderInventory() {
 /* 整理操作：判断在 inventory.js，状态改动在 state.js */
 function takeFromStorage(item) {
   if (game.isGameOver()) return;
+  const shelterKey = currentShelterKey();
+  if (!shelterKey) return;
   const plan = inventory.planTakeFromStorage(item, game.getEquipped(), game.getPocket());
   if (plan.reason) {
     terminal.log(plan.reason);
     return;
   }
-  game.removeFromStorage(item);
+  game.removeFromStorage(shelterKey, item);
   if (plan.mode === 'equip') {
     game.setEquippedSlot(plan.slot, item);
     terminal.log(UI.takeEquip(item.name));
@@ -174,28 +195,32 @@ function takeFromStorage(item) {
 
 function unequip(slot) {
   if (game.isGameOver()) return;
+  const shelterKey = currentShelterKey();
+  if (!shelterKey) return;
   const item = game.getEquipped()[slot];
   const plan = inventory.planUnequip(slot, game.getEquipped(), game.getPocket(),
-    game.getHomeStorage(), game.getStorageCapacity());
+    game.getShelterStorage(shelterKey), game.getStorageCapacity(shelterKey));
   if (plan.reason) {
     terminal.log(plan.reason);
     return;
   }
   game.setEquippedSlot(slot, null);
-  game.addToStorage(item);
+  game.addToStorage(shelterKey, item);
   terminal.log(UI.unequip(item.name));
   renderInventory();
 }
 
 function pocketToStorage(item) {
   if (game.isGameOver()) return;
-  const plan = inventory.planPocketToStorage(game.getHomeStorage(), game.getStorageCapacity());
+  const shelterKey = currentShelterKey();
+  if (!shelterKey) return;
+  const plan = inventory.planPocketToStorage(game.getShelterStorage(shelterKey), game.getStorageCapacity(shelterKey));
   if (plan.reason) {
     terminal.log(plan.reason);
     return;
   }
   game.removeFromPocket(item);
-  game.addToStorage(item);
+  game.addToStorage(shelterKey, item);
   terminal.log(UI.backToStorage(item.name));
   renderInventory();
 }
@@ -225,7 +250,7 @@ function hasItem(id) {
 
 /** 按地点/物品决定是否追加一个“看时间”类选项；不追加时返回 null */
 function ensureTimeOption(node) {
-  if (node.id === GOAL_ID) return null;
+  if (node.id === GOAL2_ID) return null;
   if (node.id === HOME_ID) return { text: '看一眼墙上的老钟', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'home' };
   if (node.id === 'n2') return { text: '查看街角的老钟', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'street' };
   if (hasItem('pocketwatch')) return { text: '掏出怀表看一眼', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'watch' };
@@ -251,15 +276,33 @@ function defaultHandler(option) {
   if (option.reply) terminal.log(option.reply);
 }
 
-const OPTION_HANDLERS = { n3: { 1: enterCave } };
+/* 安全屋专属选项：按需求插到选项列表最前（过夜 / 稍作停留），导出与导入照旧跟在后面 */
+const SHELTER_OPTIONS = [
+  /* perDay：用过之后由结算流程 clearPerDayOptions 复位，否则第二天就再也点不到「过夜」了 */
+  { text: UI.shelter.overnight, timeCost: SHELTER_OVERNIGHT_COST_SEC, batteryCost: 0, perDay: true, kind: 'overnight' },
+  { text: UI.shelter.stay, repeatable: true, timeCost: 0, batteryCost: 0, kind: 'stay' },
+  { text: UI.exportSave, repeatable: true, timeCost: 0, batteryCost: 0, save: 'export' },
+  { text: UI.importSave, repeatable: true, timeCost: 0, batteryCost: 0, save: 'import' },
+];
+
+const OPTION_HANDLERS = {
+  n3: { 1: enterCave },              /* 序号 1 对应 SCENES.n3 的「进入洞穴」 */
+  southgate: { 1: goCrossRegion },   /* 序号 1 对应 SCENES.southgate 的「前往南边的未知地域」 */
+};
+
+/* 按 option.kind 挂 handler：安全屋选项是运行时生成的，用序号会随插队错位 */
+const KIND_HANDLERS = { overnight: overnightAtShelter, stay: stayAtShelter };
 
 function buildOptions(node) {
   const table = OPTION_HANDLERS[node.id] || {};
   const extra = ensureTimeOption(node);
-  const all = extra ? [...node.options, extra] : [...node.options];
+  const shelterExtras = isShelter(game.getCurrentArea(), node.id) ? SHELTER_OPTIONS : [];
+  const all = [...shelterExtras, ...node.options];
+  if (extra) all.push(extra);
 
   return all.map((option, i) => {
     let handler = table[i + 1];
+    if (!handler && option.kind) handler = KIND_HANDLERS[option.kind];
     if (!handler && option.timeKind) handler = () => lookAtTime(option.timeKind);
     if (!handler && option.save === 'export') handler = exportSave;
     if (!handler && option.save === 'import') handler = importSave;
@@ -293,10 +336,11 @@ function refreshButtons() {
 
 async function travelTo(id) {
   if (game.isGameOver()) return;                     /* 0 */
-  const node = getNode(id);
+  const area = game.getCurrentArea();
+  const node = getNode(area, id);
   if (!node) return;
 
-  if (!isClickable(id)) {
+  if (!computeClickable(area, game.getVisitedByArea(area)).has(id)) {
     terminal.log(UI.farAway);
     return;
   }
@@ -305,22 +349,21 @@ async function travelTo(id) {
     return;
   }
 
-  const cost = computeEdgeCost(game.getCurrentNode(), id);   /* 2 */
-  const firstVisit = !game.isVisited(id);
+  const cost = computeEdgeCost(game.getCurrentNode(), id, area);   /* 2 */
+  const firstVisit = !game.isVisited(area, id);
 
   nightEnded = false;
   game.spendStamina(MOVE_STAMINA_COST);              /* 3 */
   time.advanceTime(cost);
-  if (nightEnded) return;                            /* 途中天亮：已被强制送回并结算 */
+  if (nightEnded) return;                            /* 途中天亮：已被强制送回安全屋 */
 
-  game.visit(id);
-  if (id === HOME_ID) settleNight();                 /* 4 主动回家 → 结算 */
+  game.visit(area, id);                              /* 4 到达安全屋不再自动结算，改由选项里的「过夜」触发 */
 
   await arriveAt(node);                              /* 5 正常到达流程 */
   if (game.isGameOver()) return;
 
-  if (id === GOAL_ID && firstVisit) {                /* 终点：首次到达即结束 */
-    terminal.log(UI.foundLighthouse);
+  if (id === GOAL2_ID && firstVisit) {               /* 终点：首次到达即结束 */
+    terminal.log(UI.foundJourneyEnd);
     game.setGameOver(true);
     time.stopClock();
     terminal.setLocked(true);
@@ -328,14 +371,14 @@ async function travelTo(id) {
     return;
   }
 
-  if (id !== HOME_ID && game.getStamina() <= 0) onForceHome('stamina');
+  if (!isShelter(area, id) && game.getStamina() <= 0) onForceHome('stamina');
 }
 
 async function arriveAt(node) {
   terminal.clearQueue();
 
   game.setOptions(buildOptions(node));
-  refreshMap({ visited: game.getVisited(), current: node.id });
+  refreshMap({ current: node.id });
   setSceneArt(node.ascii);
   refreshButtons();   /* 先让按钮行切到当前地点：拾取弹窗会阻塞后续流程，期间不该显示上个地点的按钮 */
 
@@ -352,7 +395,58 @@ async function arriveAt(node) {
   terminal.focusInput();
 }
 
+/* ---------------- 跨区域移动 / 安全屋过夜 / 地图视图 ---------------- */
+
+/** 点击大地图上的区域块：当前区域切进区域地图，其他区域提示不在这里 */
+function onRegionClick(areaId) {
+  if (!areaId) return;
+  if (areaId === game.getCurrentArea()) {
+    switchMapView('area');
+    return;
+  }
+  terminal.log(UI.notHere);
+}
+
+/** southgate 的「前往南边的未知地域」：扣 1 体力并切换区域与节点（耗时已由选项 timeCost 扣过） */
+async function goCrossRegion() {
+  if (game.isGameOver()) return;
+
+  const area = game.getCurrentArea();
+  const target = getCrossRegionTarget(game.getCurrentNode(), area);
+  if (!target) return;
+  const node = getNode(target.areaId, target.nodeId);
+  if (!node) return;
+
+  if (game.getStamina() < MOVE_STAMINA_COST) {
+    terminal.log(UI.noStamina);
+    return;
+  }
+
+  game.spendStamina(MOVE_STAMINA_COST);
+  game.visit(target.areaId, target.nodeId);   /* 同时把 entrance 记进 visitedByArea.area2 */
+  terminal.log(UI.crossRegionWalk);
+  switchMapView('area');                      /* 换区域后回到区域地图 */
+
+  await arriveAt(node);
+}
+
+/** 安全屋过夜：走与回家同一套结算流程，之后重新打印一次到达 */
+async function overnightAtShelter() {
+  settleNight();
+  const node = getNode(game.getCurrentArea(), game.getCurrentNode());
+  if (node) await arriveAt(node);
+}
+
+function stayAtShelter() {
+  terminal.log(UI.shelter.stayReply);
+}
+
 /* ---------------- 野外捡物 ---------------- */
+
+/** 节点上还没被捡走的物品（旧 map.js 的 getPickableItems 在新版里没有了，改由 main 负责） */
+function getPickableItems(node, collected) {
+  return (node.items || []).filter((id) => !collected.has(id));
+}
 
 async function pickUpItems(node) {
   let changed = false;
@@ -404,7 +498,7 @@ function dropFromNode(node, itemId) {
 async function onOptionClick(index) {
   if (game.isGameOver()) return;                     /* 0 */
 
-  const node = getNode(game.getCurrentNode());
+  const node = getNode(game.getCurrentArea(), game.getCurrentNode());
   const button = lastButtons.find((b) => b.index === index);
   const option = button && button.option;
   if (!node || !option) return;
@@ -469,12 +563,13 @@ function onNightEnd() {
   nightEnded = true;
   if (game.isGameOver()) return;
 
-  if (game.getCurrentNode() !== HOME_ID) {
+  const area = game.getCurrentArea();
+  if (!isShelter(area, game.getCurrentNode())) {
     onForceHome('night');
     return;
   }
 
-  /* 已经在家（正常流程不会走到）：天数 +1 并把当晚计时归零，否则时钟会卡在 06:00 */
+  /* 天亮时人在安全屋（正常流程不会走到）：天数 +1 并把当晚计时归零，否则时钟会卡在 06:00 */
   game.setDay(game.getDay() + 1);
   game.setElapsedSeconds(0);
   time.startClock(onNightEnd);
@@ -487,29 +582,35 @@ async function onForceHome(reason) {
   terminal.clearQueue();                             /* 2 */
   terminal.log(reason === 'night' ? UI.nightHome : UI.collapse);   /* 3 */
 
-  game.visit(HOME_ID);                               /* 4 先传送回家（并标记已访问），不扣体力/时间 */
-  game.setStaminaMax(game.getStaminaMax() - FORCE_HOME_PENALTY);   /* 5 */
+  /* 4 按区域送回该区域自己的 primaryShelter（并标记已访问），不扣体力/时间 */
+  const area = game.getCurrentArea();
+  const region = getRegion(area);
+  const shelterId = (region && region.primaryShelter) || HOME_ID;
+  game.visit(area, shelterId);
+  game.setStaminaMax(game.getStaminaMax() - FORCE_HOME_PENALTY);   /* 5 惩罚立即生效 */
 
   if (game.getStaminaMax() <= STAMINA_MIN) {         /* 6 走不动了：先结算，再 gameOver */
-    settleNight();                                   /* a) 天数 +1、时间归零、体力电量回满、切整理模式 */
+    settleNight();                                   /* a) 天数 +1、时间归零、体力电量回满 */
     game.setGameOver(true);                          /* b) */
     terminal.log(UI.gameOverStamina);                /* c) "你已经精疲力尽，再也走不动了。游戏结束。" */
     time.stopClock();                                /* d) 停止时钟 */
     terminal.setLocked(true);
-    redrawHomeQuietly();                             /* e) 重绘所有 UI（人已经在家） */
+    redrawShelterQuietly();                          /* e) 重绘所有 UI（人已经在安全屋） */
     return;                                          /* f) */
   }
 
-  settleNight();                                     /* 7 正常结算 */
-  await arriveAt(getNode(HOME_ID));
+  /* 7 强制回家不再自动结算：送到安全屋后由玩家自己选「过夜」 */
+  await arriveAt(getNode(area, shelterId));
 }
 
-/** 不打印到达文案地把 UI 切到“家”（结算后 gameOver 时用） */
-function redrawHomeQuietly() {
-  const home = getNode(HOME_ID);
-  game.setOptions(buildOptions(home));
-  setSceneArt(home.ascii);
-  refreshMap({ visited: game.getVisited(), current: HOME_ID });
+/** 不打印到达文案地把 UI 切到当前安全屋（结算后 gameOver 时用） */
+function redrawShelterQuietly() {
+  const area = game.getCurrentArea();
+  const node = getNode(area, game.getCurrentNode()) || getNode(area, HOME_ID);
+  if (!node) return;
+  game.setOptions(buildOptions(node));
+  setSceneArt(node.ascii);
+  refreshMap({ current: node.id });
   refreshButtons();
   renderStatusBar();
   renderInventory();
@@ -528,9 +629,9 @@ function settleNight() {
   time.resetClock();                     /* 时间回到 20:00:00 */
   time.startClock(onNightEnd);           /* 夜晚结束时时钟被停过，这里重新驱动 */
 
-  renderStatusBar();                     /* 7 重绘 UI（6 整理模式由 currentNode === home 自动生效） */
+  renderStatusBar();                     /* 7 重绘 UI（6 整理模式由「当前节点是安全屋」自动生效） */
   renderInventory();
-  refreshMap({ visited: game.getVisited(), current: game.getCurrentNode() });
+  refreshMap({ current: game.getCurrentNode() });
 }
 
 /* ---------------- 存档 ---------------- */
@@ -568,11 +669,13 @@ async function importSave() {
 
   time.stopClock();                                   /* 1 停旧定时器 */
   game.replaceFromSnapshot(snapshot);                 /* 2 替换状态 */
-  const node = getNode(game.getCurrentNode()) || getNode(HOME_ID);
+  const area = game.getCurrentArea();
+  const node = getNode(area, game.getCurrentNode()) || getNode(area, HOME_ID);
   game.setOptions(buildOptions(node));
-  time.startClock(onNightEnd);                        /* 3 重启定时器（重建时间基准） */
+  switchMapView(game.getMapView());                   /* 3 视图按存档恢复（大地图 / 区域地图） */
+  time.startClock(onNightEnd);                        /* 4 重启定时器（重建时间基准） */
 
-  refreshMap({ visited: game.getVisited(), current: game.getCurrentNode() });   /* 4 重绘 UI */
+  refreshMap({ current: game.getCurrentNode() });     /* 5 重绘 UI */
   renderStatusBar();
   refreshButtons();
   renderInventory();
@@ -588,19 +691,21 @@ const debugContext = {
     renderStatusBar();
     refreshButtons();
     renderInventory();
-    refreshMap({ visited: game.getVisited(), current: game.getCurrentNode() });
+    refreshMap({ current: game.getCurrentNode() });
   },
   getState: () => game.state,
   setState: (patch) => Object.assign(game.state, patch),
-  goto: (nodeId) => {
-    const node = getNode(nodeId);
+  goto: (nodeId, areaId) => {
+    const area = areaId || game.getCurrentArea();
+    const node = getNode(area, nodeId);
     if (!node) return false;
-    game.visit(nodeId);
+    game.visit(area, nodeId);
+    switchMapView('area');
     arriveAt(node);
     return true;
   },
-  redrawMap: () => refreshMap({ visited: game.getVisited(), current: game.getCurrentNode() }),
-  nodes: () => NODES.map((n) => ({ id: n.id, name: n.name })),
+  redrawMap: () => refreshMap({ current: game.getCurrentNode() }),
+  nodes: () => getNodes(game.getCurrentArea()).map((n) => ({ id: n.id, name: n.name })),
   redrawStatusBar: renderStatusBar,
 };
 
@@ -652,18 +757,21 @@ function boot() {
   applyTexts();
   initTheme();
 
-  initMap(document.getElementById('map'), { onNodeClick: travelTo });
+  initMap(document.getElementById('map'), { onNodeClick: travelTo, onRegionClick });
   terminal.initTerminal({ onSubmit: handleCommand });
 
+  const worldButton = document.getElementById('back-to-world');
+  if (worldButton) worldButton.addEventListener('click', () => switchMapView('world'));
+
   game.initState(HOME_ID);
-  refreshMap({ visited: game.getVisited(), current: game.getCurrentNode() });
+  switchMapView(game.getMapView());   /* 新开局按 state 的默认值显示大地图 */
   renderStatusBar();
   renderInventory();
 
   time.startClock(onNightEnd);
   window.setInterval(renderStatusBar, TICK_INTERVAL_MS);
 
-  arriveAt(getNode(HOME_ID));
+  arriveAt(getNode(game.getCurrentArea(), HOME_ID));
 }
 
 boot();
