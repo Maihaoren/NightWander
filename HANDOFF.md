@@ -2,6 +2,10 @@
 
 > 依据：本次对话的完整开发记录 + 交接前对 `D:\Dsh\NightWander` 实际文件的检查（2025 年对话末尾，检查结果见附录 B）。
 > 凡未经验证的内容均标注「待确认 / 未验证 / 计划」。**不要**把「计划」当作「已实现」。
+>
+> **【第二轮核对 · 2026-10-10】** 本文档已由新一轮对话重新逐项实测核对（模块加载实验 + 导出表比对 + 哈希校验），
+> 差异与新增发现见 **附录 D**。同轮还完成了 **本地 Git 仓库建立**（提交 `0c08aad`，标签 `v1.7.5-baseline`）。
+> **游戏逻辑代码未作任何修改**，`v6/` 下 12 个文件的字节与建仓前完全一致。
 
 ---
 
@@ -43,7 +47,7 @@ D:\Dsh\NightWander\
 |---|---|---|---|---|
 | `v6/js/config.js` | 所有可调数值（体力/电量/时间/距离系数/终端历史/事件开关/版本号） | 已实现 | 稳定 | 本机 Node 读取实测（`GAME_VERSION='v1.7.5'`、`DEBUG_CONSOLE=true`、`EVENTS_DEFAULT=false`）；缺 `CROSS_REGION_COST_SEC`/`SHELTER_OVERNIGHT_COST_SEC` |
 | `v6/js/texts.js` | 全部文案（UI 文案、物品表 `ITEMS`、场景表 `SCENES`，含 9 张 12 行 ASCII） | 已实现（单区域版） | 常改 | 曾用 Node 断言验证 9 个场景的 ASCII 行数/宽度/纯 ASCII；**尚未**新增 `lighthouse`/`southgate`/area2 五节点文案（注意：源码里出现的 `lighthouse` 子串来自文案键 `foundLighthouse`，不是灯塔场景） |
-| `v6/js/map.js` | 地图数据 + SVG 绘制 + 点击回调 | **刚重写为多区域版，未验证且与其余文件不兼容** | 正在大改 | 交接前 `Move-Item` 覆盖为多区域实现（413 行）；**未做任何运行验证** |
+| `v6/js/map.js` | 地图数据 + SVG 绘制 + 点击回调 | **刚重写为多区域版，未验证且与其余文件不兼容** | 正在大改 | 交接前 `Move-Item` 覆盖为多区域实现（**实测 420 行**，文档原记 413 行）；**未做任何运行验证**；第二轮实测：导出表已由旧版的 `NODES/GOAL_ID/isClickable/getPickableItems` 变为 22 个新导出 |
 | `v6/js/state.js` | 游戏状态与只读查询（不碰 DOM） | 已实现（单区域版） | 常改 | `state` 字段与存取函数经 Node 实测；**仍是 `homeStorage`/`visited` 旧命名，未迁移到 `sheltersByArea`/`visitedByArea`** |
 | `v6/js/timeSystem.js` | 时间/天数推进、`HH:MM:SS` 格式化、夜晚结束回调、电量上限衰减 | 已实现 | 稳定 | Node 实测：`20:00:00`↔`06:00:00` 边界、`computeBatteryCap` 取值（0→100、18000→55、36000→10）、在家不流逝（浏览器实测） |
 | `v6/js/inventory.js` | 容量计算、装备槽、整理判断（无 DOM） | 已实现（单储物箱版） | 常改 | Node 实测 `0+3+2=5`、拾取/脱下/回箱各拒绝分支；**未按 shelterKey 隔离** |
@@ -199,7 +203,7 @@ debug 指令当前实际支持（`getAllCommandNames()` 实测返回值）：`['
 
 | # | 问题 | 状态 | 依据 |
 |---|---|---|---|
-| 1 | **`v6` 当前不可运行**：新 `map.js` 依赖 `game.getVisitedByArea()`、`state.currentArea`、`state.sheltersByArea`（都不存在），且 `main.js` 仍调用旧接口（`getNode(id)`、`refreshMap({visited,current})`、`state.homeStorage`） | **已确认（文件检查）**，未修复 | 交接前实测：`state.js` 无 `getVisitedByArea`、有 `homeStorage`；`main.js` 无 `setMapView`；`config.js` 无 `CROSS_REGION_COST_SEC` |
+| 1 | **`v6` 当前不可运行**：新 `map.js` 依赖 `game.getVisitedByArea()`、`state.currentArea`、`state.sheltersByArea`（都不存在），且 `main.js` 仍调用旧接口（`getNode(id)`、`refreshMap({visited,current})`、`state.homeStorage`） | **已确认（文件检查 + 第二轮模块加载实验）**，未修复 | 交接前实测：`state.js` 无 `getVisitedByArea`、有 `homeStorage`；`main.js` 无 `setMapView`；`config.js` 无 `CROSS_REGION_COST_SEC`。**第二轮补充：实际的启动阻塞有三层，且 `main.js` 的 import 本身就是链接期致命错误 —— 见新增问题 13/14** |
 | 2 | `map.js` 里的 `CROSS_REGION_COST_SEC` 导入目标未定义 → 模块链接会失败 | 已确认（静态检查），未修复 | 新 `map.js` 的 import 列表包含该常量，`config.js` 中不存在 |
 | 3 | v1.7.5 的 9 张 ASCII 里新节点（lighthouse/southgate/area2 五节点）文案缺失 | 已确认，未实现 | `texts.js` 仍是单区域 9 场景 |
 | 4 | 「过夜」选项、安全屋储物箱隔离、跨区域移动、`/area`、存档 v2、大地图样式与「返回大地图」按钮 | 计划实现，**均未开始** | 需求文档；文件检查未见相关代码 |
@@ -207,10 +211,14 @@ debug 指令当前实际支持（`getAllCommandNames()` 实测返回值）：`['
 | 6 | `/event` 指令用户报告「失效」，但我用 Node 桩环境无法复现（原实现能响应） | **待复现**；已按「显式分支 + 大小写无关 + 非布尔兜底 + 固定用法文案」重写并 Node 验证六种输入 | 对话记录 + 当时的 Node 输出 |
 | 7 | `REACH`（220 阈值）常量删除未成功（锚点不匹配），现为**无人引用的遗留导出** | 已确认，低风险 | 该轮补丁报告 `MISS 删除 REACH`；`computeClickable` 已不再引用它 |
 | 8 | 「unvisited 菱形」配色在 `style.css` 中已改为主题黑白（浅 `#000/#fff`、深 `#fff/#1a1a1a`），**本轮未做浏览器视觉确认** | 未验证 | 补丁脚本输出 `ok css 菱形配色`，但本轮未截图/未跑浏览器 |
-| 9 | 无版本控制：容器内没有 `git`（实测命令不存在），回退只能靠 ZIP | 已知风险 | 交接前 `git --version` 失败 |
+| 9 | ~~无版本控制：容器内没有 `git`，回退只能靠 ZIP~~ | **✅ 已解决（第二轮）** | 已在 `D:\Dsh\NightWander` 建立本地 Git 仓库：初始提交 `0c08aad`、标签 `v1.7.5-baseline`；Git 2.56.0 便携版装在 `.tools/PortableGit/`（已 gitignore）并加入用户 PATH。**注意：用户明确只要本地 Git，不建 GitHub 远程仓库。** |
 | 10 | 终端历史保存在内存、不进存档；导入存档不重置历史（设计如此） | 设计已定 | 需求原文 |
 | 11 | 在本机无法用 `python -m http.server`（`python`/`python3` 均不可用）→ 预览依赖 `serve.mjs` | 已确认 | 早期实测 |
 | 12 | 手感/平衡未定：一夜 10 小时、移动 510-1188 秒、探查 1800、休息 3600 秒，实际节奏（一晚约 10-20 次行动）**未做真人试玩验证** | 设计待定 | 需求中的设计意图 + `computeEdgeCost` 计算结果 |
+| 13 | **`main.js` 的第 12 行 import 本身就会让模块链接失败**：它从 `map.js` 导入 `isClickable`、`getPickableItems`、`GOAL_ID`、`NODES` 四个名字，而新 `map.js` **一个都没有导出**。这是独立于「state 接口缺失」的第三个阻塞点 | **第二轮新发现**，文档原第 5 节问题 1 未提及，未修复 | `SyntaxError: The requested module './map.js' does not provide an export named 'GOAL_ID'`（实测） |
+| 14 | **启动阻塞有三层，顺序已实测确定**：① `config.js` 缺 `CROSS_REGION_COST_SEC`（链接期 SyntaxError）→ ② 补上后 `texts.js` 缺 `SCENES.lighthouse`（求值期 `TypeError: Cannot read properties of undefined (reading 'options')`）→ ③ `main.js` 缺 `GOAL_ID` 等 4 个导入（链接期 SyntaxError）。**只补 config.js 页面依然打不开** | **第二轮实测确认**，未修复 | 在临时副本中逐层补桩后 import 得到的三条报错 |
+| 15 | **`v6` 下行尾格式不统一**：7 个文件纯 LF（`index.html`/`config.js`/`inventory.js`/`map.js`/`saveSystem.js`/`state.js`/`timeSystem.js`），5 个文件 CRLF/LF 混排**且带 UTF-8 BOM**（`style.css`/`debug.js`/`main.js`/`terminal.js`/`texts.js`） | 已确认，**刻意未修改** | 逐字节统计。这正是文档里「PowerShell 补丁多次 `MISS`：锚点与实际文件 CRLF/文字不一致」的根因 |
+| 16 | 环境：本机 `winget` 完全不可用（任何命令返回 `0x8A150001`），系统 schannel 被环境挡住（`SEC_E_NO_CREDENTIALS`，`curl` 亦不可用），GitHub HTTPS 间歇性失败（DNS 返回污染地址 `198.51.44.8`/`198.51.45.8`） | 已确认（若日后要推远程须注意） | 第二轮实测；本地 Git 不受影响，`git` 已设 `http.sslBackend=openssl` |
 
 关键报错记录（已确认原因）：
 - `SyntaxError: Identifier 'NODES' has already been declared`（`main.js` 被重复插入 import）→ 已修；症状是浏览器整页无输出。
@@ -296,7 +304,12 @@ debug 指令当前实际支持（`getAllCommandNames()` 实测返回值）：`['
 - **最后一次修改是否已保存/运行/验证**：**已保存**；**未运行、未验证**。该次修改本身就会让页面报错（依赖未迁移），这是预期中的中间态。
 - **当前停留在哪一步**：map.js 完成、其余 8 个文件未改。
 - **下一步具体做什么**：按第 7 节顺序先改 `config.js`（补 `CROSS_REGION_COST_SEC` 等，解除 map.js 的 import 阻塞）与 `state.js`（区域/安全屋字段与函数），再依次 texts → inventory → main → saveSystem → debug → style/html。
-- **回退手段**：`NightWander-v6.zip`（34.2 KB，12 文件）内含**重写前**的 `map.js`（v1.7.5 状态）；另有 `v5/NightWander.zip` 为更早一代全量（含 pics）。本机没有 git。
+- **回退手段**（第二轮已升级）：**首选 Git** —— 仓库位于 `D:\Dsh\NightWander\.git`，`git` 已加入用户 PATH。
+  - 回到改造前版本：`git reset --hard v1.7.5-baseline`（或 `git checkout v1.7.5-baseline`）
+  - 丢弃当前所有未提交改动：`git restore .`
+  - 查看这次到底改了哪些函数/字段：`git diff`
+  - 注意：该便携版 Git 的 `git clone` 在本机受限环境（DSH 沙箱禁止命名管道）下会失败并报 `couldn't create signal pipe`，其余命令（status/log/diff/commit/restore/reset/tag/fsck 等）均实测可用。
+  - 原 ZIP 备份仍在：`NightWander-v6.zip`（34.2 KB，12 文件）内含**重写前**的 `map.js`（v1.7.5 状态）；`v5\NightWander.zip`（实测 109.6 MB）为更早一代全量（含 pics）。两者均已被 `.gitignore` 排除、未被改动。
 - 待确认：`NightWander-v6.zip` 是否已包含最后一次 bug 修复之后的全部文件（该 ZIP 是在「4 个 bug 修复」那一轮结束后重建的，**其后只发生了 map.js 重写**，而重写发生在 ZIP 之后 → 因此 ZIP 里的 map.js 是旧版，其余文件同代）。
 
 ---
@@ -393,3 +406,86 @@ debug 指令当前实际支持（`getAllCommandNames()` 实测返回值）：`['
 「请先读 HANDOFF.md + HANDOFF-LITE.md 并实际查看 v6/js 下的代码，用 3-5 行复述现状/任务/风险/下一步后停下等我确认；
 在确认之前不要改代码。下一步是按 HANDOFF 第 7 节完成多区域改造（当前项目不可运行）。」
 ```
+
+---
+
+## 附录 D：第二轮核对记录（2026-10-10，实测）
+
+> 本轮任务：① 核对本文档与代码是否一致；② 建立本地 Git 版本控制。**未修改任何游戏逻辑代码。**
+
+### D.1 核对方法
+
+- **模块加载实验**：用 `node` 动态 `import()` 逐个加载 `v6/js/*.js`，记录真实报错。
+- **导出表比对**：提取 `main.js` 的 `import { ... } from './map.js'` 名单，与 `map.js` 的 `export` 求差集。
+- **字节校验**：建仓前后对 `v6/` 12 个文件做 SHA256 逐一比对。
+
+### D.2 文档与代码一致的部分（文档可信）
+
+| 文档声称 | 实测 |
+|---|---|
+| `GAME_VERSION='v1.7.5'`、`DEBUG_CONSOLE=true`、`EVENTS_DEFAULT=false` | ✅ 一致 |
+| `config.js` 无 `CROSS_REGION_COST_SEC` / `SHELTER_OVERNIGHT_COST_SEC` | ✅ 一致（共 19 个导出） |
+| `state.js` 仍有 `visited`/`homeStorage`，无 `getVisitedByArea` | ✅ 一致（共 46 个导出） |
+| 新 `map.js` 的 `REGIONS`/节点/坐标/跨区域边结构 | ✅ 与需求一致 |
+| `texts.js` 只有 `home, n1–n7, goal` 共 9 场景 | ✅ 一致 |
+| `main.js` 无 `setMapView`，仍用 `=== 'home'` 硬编码 | ✅ 一致 |
+| `saveSystem.js` `VERSION = 1`；`debug.js` 无 `/area` | ✅ 一致 |
+| `style.css` 无 `.region-*`/`.road--cross`；`index.html` 无「返回大地图」按钮 | ✅ 一致 |
+| 仓库内无遗留临时脚本 | ✅ 干净 |
+
+**唯一数字差错**：`map.js` 实测 **420 行**，文档原记 413 行（已在第 2 节表格修正）。
+
+### D.3 文档遗漏的新发现
+
+见第 5 节新增问题 **13、14**：`main.js` 从 `map.js` 导入的 `isClickable` / `getPickableItems` / `GOAL_ID` / `NODES` 四者在新 `map.js` 中**均不存在**。这本身就是一个链接期致命错误，而不是文档所说的「只是尚未区域化改造」。
+
+```text
+main.js 需要：initMap, refreshMap, isClickable, getNode, computeEdgeCost,
+             getPickableItems, HOME_ID, GOAL_ID, NODES
+map.js 提供：VIEW, NODE_W, NODE_H, HOME_ID, REGIONS, getRegion, getCurrentRegion,
+             getNode, getNodes, getEdges, getCrossRegionTarget, isShelter,
+             isPrimaryShelter, distance, computeClickable, computeEdgeCost,
+             initMap, setMapView, getMapView, refreshMap, unlockedAreas, isAreaUnlocked
+缺失：isClickable, getPickableItems, GOAL_ID, NODES
+```
+
+### D.4 实测的三层启动阻塞（按触发顺序）
+
+在**临时副本**中逐层补桩后重新加载模块得到（仓库文件未参与）：
+
+```text
+1) map.js  → SyntaxError: './config.js' does not provide an export named 'CROSS_REGION_COST_SEC'
+2) 补上该常量后 →
+   map.js  → TypeError: Cannot read properties of undefined (reading 'options')   ← SCENES.lighthouse 不存在
+3) main.js → SyntaxError: './map.js' does not provide an export named 'GOAL_ID'
+```
+
+**结论：只改 `config.js` 解决不了问题。** 第 7 节的 8 个子任务里，config / state / texts / main 必须一起到位，页面才能重新起来。
+
+### D.5 本轮建立的 Git 版本控制
+
+- **工具**：PortableGit **2.56.0.windows.2**，位于 `.tools\PortableGit\`（445 MB，已 gitignore），`cmd\` 与 `bin\` 已加入**用户级 PATH**。
+- **仓库**：`D:\Dsh\NightWander\.git`，默认分支 `main`。
+- **初始提交**：`0c08aad`，16 文件 / 3666 行插入。
+- **标签**：`v1.7.5-baseline`（多区域改造前的安全回退点）。
+- **仓库级配置**（只写本仓库，未动全局）：`user.name=NightWander`、`user.email=2726904437@qq.com`、`core.autocrlf=false`、`core.safecrlf=false`、`http.sslBackend=openssl`。
+- **`.gitignore` 关键排除**：`.tools/`、`v5/`、`*.zip`。
+  依据：`v5\NightWander.zip` 实测 **109.6 MB**，超过 GitHub 单文件 100 MB 硬上限。
+- **为什么设 `core.autocrlf=false`**：`v6` 下 7 个文件是纯 LF、5 个文件是 CRLF/LF 混排且带 UTF-8 BOM。任何行尾归一化规则都可能在 checkout 时改写文件，故按字节原样存取。
+- **验证**：`git diff HEAD` 为空；16 个文件 `hash-object` 与 HEAD 逐一相符；`v6/` 12 个文件 SHA256 与建仓前基线**差异为 0**；`git fsck` 无错。
+
+### D.6 本机环境限制（实测，仅备查）
+
+| 现象 | 说明 |
+|---|---|
+| `winget` 任何命令返回 `0x8A150001` | 无法用于装软件；当前用户也不是管理员 |
+| 系统 schannel `SEC_E_NO_CREDENTIALS` | `curl.exe`、PowerShell `Invoke-RestMethod` 均无法建 TLS；**Node 的 `fetch` 可用**，故改用 Node 下载 |
+| `git clone`（本地仓库）失败 | `sh.exe: couldn't create signal pipe, Win32 error 5`——受限环境禁止命名管道；其余 git 命令实测全部可用 |
+| 写注册表被拒 | 首次尝试加 PATH 被沙箱拒绝 `Requested registry access is not allowed`，经用户批准后成功 |
+| GitHub 间歇性连不通 | `github.com` DNS 返回污染地址 `198.51.44.8`/`198.51.45.8`；本机 `127.0.0.1:10808` 代理未在监听。**本轮不需要，仅备查** |
+
+### D.7 用户决定
+
+- **只用本地 Git，不建 GitHub 远程仓库** —— 原第 7 节之后的远程推送计划全部作废。
+- `user.name` 目前是占位值 `NightWander`，用户尚未提供正式署名。
+- 用户要求：**v1.8.0 改造每个子步骤都要提交一次，保证随时可回档。**
