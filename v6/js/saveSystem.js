@@ -53,6 +53,9 @@ export function deserialize(text) {
     if (!Object.values(data.sheltersByArea).every((list) => Array.isArray(list))) return null;
     if (typeof data.storageCapacityByShelter !== 'object' || Array.isArray(data.storageCapacityByShelter)) return null;
 
+    /* resolvedMustResolve 是 v1.8.1 新增字段：不在 REQUIRED 里，旧存档缺它照常可载入 */
+    if (data.resolvedMustResolve !== undefined && !Array.isArray(data.resolvedMustResolve)) return null;
+
     /* collectedItems 存的是数组，还原成 Set */
     if (!Array.isArray(data.collectedItems)) return null;
     data.collectedItems = new Set(data.collectedItems);

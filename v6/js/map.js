@@ -38,7 +38,7 @@ const REQUIRES = {
   n5: { 使用手电筒探查: { check: HOLDS_FLASHLIGHT, hint: '需要手电筒' } },
 };
 
-function makeNode(areaId, id, x, y, scene, items) {
+function makeNode(areaId, id, x, y, scene, items, mustResolve) {
   const options = scene.options.map((o) => {
     const rule = (REQUIRES[id] || {})[o.text];
     return rule ? { ...o, requires: rule.check, requiresHint: rule.hint } : { ...o };
@@ -47,6 +47,7 @@ function makeNode(areaId, id, x, y, scene, items) {
     id, areaId, x, y,
     name: scene.name, desc: scene.desc, ascii: scene.ascii, altAscii: scene.altAscii,
     items: items || [], options,
+    mustResolve: Boolean(mustResolve),   /* true = 必须先在这里做出一次选择才能离开；默认 false */
   };
 }
 
@@ -71,7 +72,7 @@ export const REGIONS = {
       makeNode('area1', 'n4', 450, 100, SCENES.n4, []),
       makeNode('area1', 'n5', 450, 300, SCENES.n5, []),
       makeNode('area1', 'n6', 450, 500, SCENES.n6, []),
-      makeNode('area1', 'n7', 650, 300, SCENES.n7, []),
+      makeNode('area1', 'n7', 650, 300, SCENES.n7, [], true),   /* 岔路口：必须先做出一次选择才能离开 */
       makeNode('area1', 'lighthouse', 800, 300, SCENES.lighthouse, ['pocketwatch']),
       makeNode('area1', 'southgate', 920, 300, SCENES.southgate, []),
     ],
@@ -188,6 +189,47 @@ export function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+/* ---------------- 节点坐标噪声（纯视觉抖动，不参与任何数值计算） ---------------- */
+
+const NOISE_RANGE = 40;                 /* 偏移范围 ±40（需求指定） */
+
+/** FNV-1a 32 位字符串 hash：用 nodeId 当种子 */
+function hashNodeId(nodeId) {
+  const str = String(nodeId);
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+const noiseCache = new Map();
+
+/**
+ * 节点的固定随机偏移 { dx, dy }，各在 [-40, 40] 之间。
+ * 同一个 nodeId 永远返回同一个结果（取同一份 hash 的高 16 位与低 16 位分别算 x / y），
+ * 所以重绘、切视图、刷新页面都不会跳位。
+ */
+export function getNodeNoise(nodeId) {
+  if (noiseCache.has(nodeId)) return noiseCache.get(nodeId);
+
+  const h = hashNodeId(nodeId);
+  const span = NOISE_RANGE * 2 + 1;
+  const noise = {
+    dx: ((h & 0xffff) % span) - NOISE_RANGE,
+    dy: (((h >>> 16) & 0xffff) % span) - NOISE_RANGE,
+  };
+  noiseCache.set(nodeId, noise);
+  return noise;
+}
+
+/** 节点实际绘制坐标 = 原始坐标 + 噪声 */
+function drawPos(node) {
+  const { dx, dy } = getNodeNoise(node.id);
+  return { x: node.x + dx, y: node.y + dy };
+}
+
 /**
  * 可点击判定：节点【已访问】，或【与任一已访问节点有边相连】。
  * 不用距离阈值 —— 有连线就能走，避免“看得见路却点不动”。
@@ -211,6 +253,10 @@ const edgeCostCache = new Map();
 /**
  * 边耗时：跨区域边用 edges 里写死的 timeCost（缺省 CROSS_REGION_COST_SEC）；
  * 同区域边 = 逻辑距离 × DISTANCE_TO_TIME_RATIO（支路再乘 SECONDARY_ROAD_PENALTY）。
+ *
+ * 【坐标选择】这里一律用【原始坐标】算距离，不用 getNodeNoise 的绘制偏移。
+ * 理由：噪声只是视觉抖动，若参与算距离会把已经定好的手感与平衡值改掉
+ * （例如 home→n2 = 510 秒这条回归基准）。渲染用偏移、算费用原始值，两者刻意分开。
  */
 export function computeEdgeCost(fromId, toId, areaId) {
   const area = areaId || game.state.currentArea;
@@ -324,13 +370,24 @@ function renderArea(areaId) {
   const visited = game.getVisitedByArea(areaId);
   const clickable = computeClickable(areaId, visited);
 
+  /* 可见 = 已访问 或 可点击；边只有在两端都可见时才画 */
+  const visible = new Set();
+  for (const node of region.nodes) {
+    if (visited.has(node.id) || clickable.has(node.id)) visible.add(node.id);
+  }
+
   for (const edge of region.edges) {
+    /* 任一端不可见 → 整条边不渲染（开局只留家一个孤点，不靠悬空的线泄露地图结构） */
+    if (!visible.has(edge.from) || !visible.has(edge.to)) continue;
+
     const a = getNode(areaId, edge.from);
     const b = getNode(areaId, edge.to);
     if (!a || !b) continue;
+    const pa = drawPos(a);
+    const pb = drawPos(b);
     const line = svgNode('line', {
       class: 'road' + (edge.crossRegion ? ' road--cross' : ''),
-      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+      x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y,
     });
     layers.roads.appendChild(line);
     edgeEls.push({ from: edge.from, to: edge.to, el: line });
@@ -348,16 +405,17 @@ function renderArea(areaId) {
 
     const group = svgNode('g', { class: classes.join(' '), 'data-id': node.id });
     const d = NODE_W / 2;
+    const p = drawPos(node);                 /* 绘制坐标 = 原始坐标 + 固定噪声 */
 
     group.appendChild(svgNode('rect', {
       class: 'node-rect',
-      x: node.x - d, y: node.y - NODE_H / 2, width: NODE_W, height: NODE_H,
+      x: p.x - d, y: p.y - NODE_H / 2, width: NODE_W, height: NODE_H,
     }));
     group.appendChild(svgNode('polygon', {
       class: 'node-diamond',
-      points: `${node.x},${node.y - d} ${node.x + d},${node.y} ${node.x},${node.y + d} ${node.x - d},${node.y}`,
+      points: `${p.x},${p.y - d} ${p.x + d},${p.y} ${p.x},${p.y + d} ${p.x - d},${p.y}`,
     }));
-    const label = svgNode('text', { class: 'node-name', x: node.x, y: node.y + 9 });
+    const label = svgNode('text', { class: 'node-name', x: p.x, y: p.y + 9 });
     label.textContent = node.name;
     group.appendChild(label);
 

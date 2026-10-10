@@ -128,21 +128,32 @@ function renderInventory() {
   const pocket = game.getPocket();
   const shelterKey = currentShelterKey();
   const storage = shelterKey ? game.getShelterStorage(shelterKey) : [];
-  const capacity = inventory.computePocketCapacity(equipped);
-  const full = pocket.length >= capacity;
+  const capacity = inventory.computePocketCapacity(equipped);   /* 手持保底 1 格 + 装备提供的 pockets */
+  const carried = inventory.computeCarried(equipped, pocket);   /* 口袋件数 + 手持槽占用 */
+  const full = carried >= capacity;
   const atHome = Boolean(shelterKey);
 
-  count.textContent = UI.inventory.count(pocket.length, capacity, full);
+  count.textContent = UI.inventory.count(carried, capacity, full);
   const hint = UI.inventory.sources(inventory.getPocketSources(equipped, UI.slotName));
   count.title = hint;
   if (title) title.title = hint;
 
   el.textContent = '';
 
-  /* 装备槽：在家点击卸下，离家只读 */
+  /* 装备槽：在家点击卸下；野外只有手持槽能动（它同时是保底物品栏），其余槽只读 */
   el.appendChild(section(UI.inventory.slots, inventory.SLOTS.map((slot) => {
     const item = equipped[slot];
     const label = `${UI.slotName[slot]}：${item ? item.name : UI.inventory.emptySlot}`;
+
+    if (slot === 'hand') {
+      return itemButton(label, {
+        onClick: () => handToPocket(),
+        disabled: !item,
+        hint: item
+          ? (atHome ? '点击收回口袋（口袋满则放回储物箱）' : '点击收回口袋')
+          : '保底物品栏：固定 1 格，任何物品都能放',
+      });
+    }
     if (!atHome) return itemButton(label, { onClick: () => inspectItem(item), disabled: !item });
     return itemButton(label, {
       onClick: () => unequip(slot),
@@ -157,7 +168,8 @@ function renderInventory() {
       `${UI.inventory.storage} ${storage.length}/${game.getStorageCapacity(shelterKey)}`,
       storage.map((item) => {
         const plan = inventory.planTakeFromStorage(item, equipped, pocket);
-        return itemButton(`${item.name}${plan.mode === 'equip' ? '（可装备）' : ''}`, {
+        const suffix = plan.mode === 'equip' ? '（可装备）' : (plan.mode === 'hand' ? '（可拿在手里）' : '');
+        return itemButton(`${item.name}${suffix}`, {
           onClick: () => takeFromStorage(item),
           disabled: Boolean(plan.reason),
           hint: item.pockets ? `可提供 ${item.pockets} 个口袋格` : '',
@@ -167,7 +179,7 @@ function renderInventory() {
   }
 
   el.appendChild(section(UI.inventory.pocket, pocket.map((item) => itemButton(item.name, {
-    onClick: atHome ? () => pocketToStorage(item) : () => inspectItem(item),
+    onClick: atHome ? () => pocketToStorage(item) : () => onPocketClickAway(item),
     hint: item.slot ? `${UI.slotName[item.slot]}槽物品` : '',
   }))));
 }
@@ -186,6 +198,9 @@ function takeFromStorage(item) {
   if (plan.mode === 'equip') {
     game.setEquippedSlot(plan.slot, item);
     terminal.log(UI.takeEquip(item.name));
+  } else if (plan.mode === 'hand') {
+    game.setEquippedSlot('hand', item);
+    terminal.log(UI.toHand(item.name));
   } else {
     game.addToPocket(item);
     terminal.log(UI.takePocket(item.name));
@@ -223,6 +238,54 @@ function pocketToStorage(item) {
   game.addToStorage(shelterKey, item);
   terminal.log(UI.backToStorage(item.name));
   renderInventory();
+}
+
+/* ---------------- 口袋 ↔ 手持（手持槽 = 保底物品栏） ---------------- */
+
+/** 口袋 → 手持槽：野外与在家都允许，手持只放一件 */
+function pocketToHand(item) {
+  if (game.isGameOver()) return;
+  const plan = inventory.planPocketToHand(game.getEquipped());
+  if (plan.reason) {
+    terminal.log(plan.reason);
+    return;
+  }
+  game.removeFromPocket(item);
+  game.setEquippedSlot('hand', item);
+  terminal.log(UI.toHand(item.name));
+  renderInventory();
+}
+
+/** 手持槽 → 口袋；在家且口袋放不下时退回储物箱（野外只提示） */
+function handToPocket() {
+  if (game.isGameOver()) return;
+  const item = game.getEquipped().hand;
+  if (!item) return;
+
+  const plan = inventory.planHandToPocket(game.getEquipped(), game.getPocket());
+  if (plan.reason) {
+    if (currentShelterKey()) { unequip('hand'); return; }
+    terminal.log(plan.reason);
+    return;
+  }
+  game.setEquippedSlot('hand', null);
+  game.addToPocket(item);
+  terminal.log(UI.toPocket(item.name));
+  renderInventory();
+}
+
+/** 野外点口袋里的物品：手持槽空着就先收进手持槽，否则退回「查看」 */
+function onPocketClickAway(item) {
+  if (game.isGameOver()) return;
+  if (game.getEquipped().hand) { inspectItem(item); return; }
+  pocketToHand(item);
+}
+
+/** 当前节点是否处于「必须先做出决定」且尚未解除的状态（mustResolve） */
+function isMustResolvePending(areaId, nodeId) {
+  const node = getNode(areaId, nodeId);
+  if (!node || !node.mustResolve) return false;
+  return !game.isMustResolveResolved(areaId, nodeId);
 }
 
 /* ---------------- 选项 ---------------- */
@@ -340,6 +403,12 @@ async function travelTo(id) {
   const node = getNode(area, id);
   if (!node) return;
 
+  /* mustResolve：当前所在节点还没做出决定时不能离开（不消耗任何资源） */
+  if (isMustResolvePending(area, game.getCurrentNode())) {
+    terminal.log(UI.mustResolveFirst);
+    return;
+  }
+
   if (!computeClickable(area, game.getVisitedByArea(area)).has(id)) {
     terminal.log(UI.farAway);
     return;
@@ -455,17 +524,23 @@ async function pickUpItems(node) {
     const item = ITEMS[itemId];
     if (!item) continue;
 
+    /* 优先级：口袋有空位 → 手持槽为空 → 都满才触发替换弹窗 */
     const plan = inventory.planWildPickup(game.getPocket(), game.getEquipped());
-    if (plan.mode === 'pocket') {
-      game.addToPocket({ ...item });
+    if (plan.mode === 'pocket' || plan.mode === 'hand') {
+      if (plan.mode === 'pocket') {
+        game.addToPocket({ ...item });
+        terminal.log(UI.gotItem(item.name));
+      } else {
+        game.setEquippedSlot('hand', { ...item });
+        terminal.log(UI.toHand(item.name));
+      }
       game.markItemCollected(itemId);
       dropFromNode(node, itemId);
-      terminal.log(UI.gotItem(item.name));
       changed = true;
       continue;
     }
 
-    /* 口袋满了：弹窗选一件丢掉，或放弃拾取（未选择前不关闭，时间照常流逝） */
+    /* 口袋与手持槽都满了：弹窗选一件丢掉，或放弃拾取（未选择前不关闭，时间照常流逝） */
     const choice = await terminal.showModal({
       title: UI.discardTitle,
       text: `捡到：${item.name}（${item.desc}）`,
@@ -498,7 +573,8 @@ function dropFromNode(node, itemId) {
 async function onOptionClick(index) {
   if (game.isGameOver()) return;                     /* 0 */
 
-  const node = getNode(game.getCurrentArea(), game.getCurrentNode());
+  const area = game.getCurrentArea();
+  const node = getNode(area, game.getCurrentNode());
   const button = lastButtons.find((b) => b.index === index);
   const option = button && button.option;
   if (!node || !option) return;
@@ -516,6 +592,9 @@ async function onOptionClick(index) {
   terminal.log(UI.echo(option.text));                                      /* 回看：> 选项文本 */
   game.markOptionUsed(node.id, option.fullIndex, option.perDay === true);  /* 3 */
   game.markGroupUsed(node.id, option.group);
+
+  /* mustResolve：做出任意一次选择即视为解除 */
+  if (node.mustResolve) game.markMustResolveResolved(area, node.id);
 
   if (!nightEnded) await option.handler(option, node);           /* 4 */
 

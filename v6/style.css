@@ -86,11 +86,11 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ---------- 布局：左 22% / 右 78% ---------- */
+/* ---------- 布局：左 30% / 右 70%（左栏内部仍是 55 / 45 不变） ---------- */
 .app {
   height: 100vh;
   display: grid;
-  grid-template-columns: 22fr 78fr;
+  grid-template-columns: 30fr 70fr;
   gap: var(--gap);
   padding: var(--gap);
 }

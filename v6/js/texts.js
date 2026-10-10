@@ -44,6 +44,7 @@ export const UI = {
   prompt: '你要做什么？',
   optionLine: (buttons) => buttons.map((b) => `[${b.index}] ${b.option.text}`).join('  '),
   unknownCommand: '未知的命令',
+  noOptionToRun: '当前没有可执行的选项',
   optionNoRequirement: '当前无法使用',
   lookTime: '查看时间',
 
@@ -51,10 +52,13 @@ export const UI = {
   inspect: (name, desc) => `你查看 ${name}：${desc}`,
   takeEquip: (name) => `你穿上了${name}。`,
   takePocket: (name) => `你把${name}放进了口袋。`,
+  toHand: (name) => `你把${name}拿在了手里。`,
+  toPocket: (name) => `你把${name}收进了口袋。`,
   unequip: (name) => `你脱下了${name}。`,
   backToStorage: (name) => `你把${name}放回了储物箱。`,
 
   farAway: '那里太远了，你还不认识路。',
+  mustResolveFirst: '你需要先在这里做出决定。',
   noStamina: '你太累了，无法继续前进。',
   noBattery: '电量不足。',
   nightHome: '天亮了，你不得不回家。',

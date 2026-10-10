@@ -44,9 +44,24 @@ export function initTerminal(handlers = {}) {
       event.preventDefault();
       const value = els.input ? els.input.value : '';
       if (els.input) els.input.value = '';
+
+      /* 空输入直接回车 = 执行编号最小的那个可点选项 */
+      if (!String(value).trim()) { submitFirstEnabled(); return; }
       handleCommand(value);
     });
   }
+}
+
+/**
+ * 空输入回车：等价于点击「编号最小的可点按钮」。
+ * lastButtons 本身就是按编号顺序排的，所以第一个 !disabled 的就是编号最小的可点项。
+ * 注意：只在输入为空时走这里，数字输入与 "/" 输入完全不受影响。
+ */
+function submitFirstEnabled() {
+  if (locked) return;
+  const target = lastButtons.find((button) => !button.disabled);
+  if (!target) { log(UI.noOptionToRun); return; }
+  if (onSelect) onSelect(target.index);
 }
 
 /* ---------------- 输出队列 ---------------- */

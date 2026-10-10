@@ -29,6 +29,7 @@ export const state = {
   equipped: { hand: null, torso: null, legs: null, back: null },
   pocket: [],
   collectedItems: new Set(),   /* 已经被捡走过的节点物品 id（保证不会反复捡到同一个） */
+  resolvedMustResolve: new Set(), /* mustResolve 已解除的节点，键为 'areaId:nodeId'（可存档） */
   eventsEnabled: false,        /* 随机事件系统开关（从 localStorage 读，功能待实现） */
   gameOver: false,
   options: [],
@@ -98,6 +99,18 @@ export function getVisitedByArea(areaId) {
 
 export function isVisited(areaId, nodeId) {
   return getVisitedByArea(areaId).has(nodeId);
+}
+
+/* ---------------- mustResolve（必须先做出决定的节点） ---------------- */
+
+/* 键格式与安全屋储物箱一致（'areaId:nodeId'），直接复用 makeShelterKey */
+
+export function isMustResolveResolved(areaId, nodeId) {
+  return state.resolvedMustResolve.has(makeShelterKey(areaId, nodeId));
+}
+
+export function markMustResolveResolved(areaId, nodeId) {
+  state.resolvedMustResolve.add(makeShelterKey(areaId, nodeId));
 }
 
 /* ---------------- 体力 ---------------- */
@@ -346,6 +359,7 @@ export function toSnapshot() {
     },
     pocket: state.pocket.map((item) => ({ ...item })),
     collectedItems: [...state.collectedItems],
+    resolvedMustResolve: [...state.resolvedMustResolve],
     usedOptions: persistent,           /* 只有非 perDay 的部分 */
     usedGroups: [...usedGroups].map(([id, set]) => [id, [...set]]),
   };
@@ -385,6 +399,8 @@ export function replaceFromSnapshot(data) {
   };
   state.pocket = data.pocket.map((item) => ({ ...item }));
   state.collectedItems = new Set(data.collectedItems || []);
+  /* 旧存档没有这个字段：缺省为空集（即都没解除），向后兼容，不需要升存档版本 */
+  state.resolvedMustResolve = new Set(data.resolvedMustResolve || []);
   state.gameOver = false;
 
   usedOptions.clear();
