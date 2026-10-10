@@ -8,19 +8,24 @@
 import { STAMINA_MAX_INIT, BATTERY_MAX, STORAGE_CAPACITY, EVENTS_DEFAULT } from './config.js';
 import { ITEMS } from './texts.js';
 
-/** 初始放在储物箱里的物品 */
-const INITIAL_STORAGE = ['coat', 'jeans', 'flashlight', 'torch', 'oldmap', 'pocketwatch'];
+/**
+ * 初始放在储物箱里的物品。
+ * 多区域需求：怀表（pocketwatch）已移到「灯塔」节点的 items，不再开局给。
+ */
+const INITIAL_STORAGE = ['coat', 'jeans', 'flashlight', 'torch', 'oldmap'];
 
 export const state = {
   day: 1,
   elapsedSeconds: 0,
+  currentArea: 'area1',        /* 当前所在区域；起始区域是 area1 */
+  mapView: 'world',            /* 地图视图：'world' 大地图 / 'area' 区域地图 */
   currentNode: null,
-  visited: new Set(),
+  visitedByArea: {},           /* areaId -> Set<nodeId>，各区域的已访问节点分开记 */
   stamina: STAMINA_MAX_INIT,
   staminaMax: STAMINA_MAX_INIT,
   battery: BATTERY_MAX,
-  storageCapacity: STORAGE_CAPACITY,
-  homeStorage: [],
+  sheltersByArea: {},           /* shelterKey('area1:home') -> Item[]，各安全屋储物箱互相隔离 */
+  storageCapacityByShelter: {}, /* shelterKey -> number，各安全屋容量互相独立 */
   equipped: { hand: null, torso: null, legs: null, back: null },
   pocket: [],
   collectedItems: new Set(),   /* 已经被捡走过的节点物品 id（保证不会反复捡到同一个） */
@@ -37,15 +42,44 @@ const usedGroups = new Map();    /* nodeId -> Set<group> */
 export function initState(homeId) {
   state.eventsEnabled = readEventsEnabled();   /* 首次加载：localStorage → 默认值 */
   state.currentNode = homeId;
-  state.visited.add(homeId);
-  state.homeStorage = INITIAL_STORAGE.filter((id) => ITEMS[id]).map((id) => ({ ...ITEMS[id] }));
+  getVisitedByArea(state.currentArea).add(homeId);
+  /* 开局物品放进「起始区域起始安全屋」的储物箱 */
+  const key = makeShelterKey(state.currentArea, homeId);
+  getShelterStorage(key).push(...INITIAL_STORAGE.filter((id) => ITEMS[id]).map((id) => ({ ...ITEMS[id] })));
+}
+
+/* ---------------- 区域与地图视图 ---------------- */
+
+export function getCurrentArea() {
+  return state.currentArea;
+}
+
+export function setCurrentArea(areaId) {
+  state.currentArea = areaId;
+}
+
+export function getMapView() {
+  return state.mapView;
+}
+
+/** 只取值 'world' / 'area'，非法值一律当 'area'（与 map.setMapView 保持一致） */
+export function setMapView(view) {
+  state.mapView = view === 'world' ? 'world' : 'area';
+  return state.mapView;
+}
+
+/** 安全屋储物箱的键：形如 'area1:home' */
+export function makeShelterKey(areaId, nodeId) {
+  return `${areaId}:${nodeId}`;
 }
 
 /* ---------------- 位置 ---------------- */
 
-export function visit(id) {
-  state.currentNode = id;
-  state.visited.add(id);
+/** 移动/传送：同时切换区域与节点，并把该节点标记为该区域的已访问 */
+export function visit(areaId, nodeId) {
+  state.currentArea = areaId;
+  state.currentNode = nodeId;
+  getVisitedByArea(areaId).add(nodeId);
 }
 
 export function setCurrentNode(id) {
@@ -56,12 +90,14 @@ export function getCurrentNode() {
   return state.currentNode;
 }
 
-export function getVisited() {
-  return state.visited;
+/** 某区域的已访问节点集合（首次使用该区域时惰性建空集） */
+export function getVisitedByArea(areaId) {
+  if (!state.visitedByArea[areaId]) state.visitedByArea[areaId] = new Set();
+  return state.visitedByArea[areaId];
 }
 
-export function isVisited(id) {
-  return state.visited.has(id);
+export function isVisited(areaId, nodeId) {
+  return getVisitedByArea(areaId).has(nodeId);
 }
 
 /* ---------------- 体力 ---------------- */
@@ -186,16 +222,22 @@ export function markGroupUsed(nodeId, group) {
 
 /* ---------------- 储物箱 / 装备槽 / 口袋 ---------------- */
 
-export function getStorageCapacity() {
-  return state.storageCapacity;
+export function getStorageCapacity(shelterKey) {
+  /* 首次使用该安全屋时惰性初始化为默认容量 */
+  if (state.storageCapacityByShelter[shelterKey] === undefined) {
+    state.storageCapacityByShelter[shelterKey] = STORAGE_CAPACITY;
+  }
+  return state.storageCapacityByShelter[shelterKey];
 }
 
-export function setStorageCapacity(value) {
-  state.storageCapacity = Math.max(0, value);
+export function setStorageCapacity(shelterKey, value) {
+  state.storageCapacityByShelter[shelterKey] = Math.max(0, value);
 }
 
-export function getHomeStorage() {
-  return state.homeStorage;
+/** 某安全屋的储物箱（首次使用该安全屋时惰性建空箱） */
+export function getShelterStorage(shelterKey) {
+  if (!state.sheltersByArea[shelterKey]) state.sheltersByArea[shelterKey] = [];
+  return state.sheltersByArea[shelterKey];
 }
 
 export function getEquipped() {
@@ -245,13 +287,14 @@ export function markItemCollected(id) {
   state.collectedItems.add(id);
 }
 
-export function addToStorage(item) {
-  state.homeStorage.push(item);
+export function addToStorage(shelterKey, item) {
+  getShelterStorage(shelterKey).push(item);
 }
 
-export function removeFromStorage(item) {
-  const i = state.homeStorage.indexOf(item);
-  if (i >= 0) state.homeStorage.splice(i, 1);
+export function removeFromStorage(shelterKey, item) {
+  const storage = getShelterStorage(shelterKey);
+  const i = storage.indexOf(item);
+  if (i >= 0) storage.splice(i, 1);
 }
 
 export function setEquippedSlot(slot, item) {
@@ -273,16 +316,28 @@ export function toSnapshot() {
   const persistent = {};
   for (const [nodeId, index] of getUsedOptionsAllNodes()) persistent[nodeId] = index;
 
+  /* 各区域已访问节点：Set → 数组，才能进 JSON */
+  const visitedByArea = {};
+  for (const [areaId, set] of Object.entries(state.visitedByArea)) visitedByArea[areaId] = [...set];
+
+  /* 各安全屋储物箱：逐件浅拷贝 */
+  const sheltersByArea = {};
+  for (const [key, list] of Object.entries(state.sheltersByArea)) {
+    sheltersByArea[key] = list.map((item) => ({ ...item }));
+  }
+
   return {
     day: state.day,
     elapsedSeconds: state.elapsedSeconds,
+    currentArea: state.currentArea,
+    mapView: state.mapView,
     currentNode: state.currentNode,
-    visited: [...state.visited],
+    visitedByArea,
     stamina: state.stamina,
     staminaMax: state.staminaMax,
     battery: state.battery,
-    storageCapacity: state.storageCapacity,
-    homeStorage: state.homeStorage.map((item) => ({ ...item })),
+    storageCapacityByShelter: { ...state.storageCapacityByShelter },
+    sheltersByArea,
     equipped: {
       hand: state.equipped.hand ? { ...state.equipped.hand } : null,
       torso: state.equipped.torso ? { ...state.equipped.torso } : null,
@@ -303,13 +358,25 @@ function getUsedOptionsAllNodes() {
 export function replaceFromSnapshot(data) {
   state.day = data.day;
   state.elapsedSeconds = data.elapsedSeconds;
+  state.currentArea = data.currentArea;
+  state.mapView = data.mapView;
   state.currentNode = data.currentNode;
-  state.visited = new Set(data.visited);
+
+  state.visitedByArea = {};
+  for (const [areaId, list] of Object.entries(data.visitedByArea)) {
+    state.visitedByArea[areaId] = new Set(list);
+  }
+
   state.stamina = data.stamina;
   state.staminaMax = data.staminaMax;
   state.battery = data.battery;
-  state.storageCapacity = data.storageCapacity;
-  state.homeStorage = data.homeStorage.map((item) => ({ ...item }));
+  state.storageCapacityByShelter = { ...data.storageCapacityByShelter };
+
+  state.sheltersByArea = {};
+  for (const [key, list] of Object.entries(data.sheltersByArea)) {
+    state.sheltersByArea[key] = list.map((item) => ({ ...item }));
+  }
+
   state.equipped = {
     hand: data.equipped.hand ? { ...data.equipped.hand } : null,
     torso: data.equipped.torso ? { ...data.equipped.torso } : null,
