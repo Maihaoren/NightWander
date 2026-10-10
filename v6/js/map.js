@@ -191,7 +191,7 @@ export function distance(a, b) {
 
 /* ---------------- 节点坐标噪声（纯视觉抖动，不参与任何数值计算） ---------------- */
 
-const NOISE_RANGE = 40;                 /* 偏移范围 ±40（需求指定） */
+const NOISE_RANGE = 35;                 /* 偏移范围 ±35：实测 ±40 会让 2 对节点框重叠，±35 是不重叠的最大值 */
 
 /** FNV-1a 32 位字符串 hash：用 nodeId 当种子 */
 function hashNodeId(nodeId) {
@@ -207,7 +207,7 @@ function hashNodeId(nodeId) {
 const noiseCache = new Map();
 
 /**
- * 节点的固定随机偏移 { dx, dy }，各在 [-40, 40] 之间。
+ * 节点的固定随机偏移 { dx, dy }，各在 [-35, 35] 之间。
  * 同一个 nodeId 永远返回同一个结果（取同一份 hash 的高 16 位与低 16 位分别算 x / y），
  * 所以重绘、切视图、刷新页面都不会跳位。
  */
@@ -224,10 +224,16 @@ export function getNodeNoise(nodeId) {
   return noise;
 }
 
-/** 节点实际绘制坐标 = 原始坐标 + 噪声 */
+/** 节点实际绘制坐标 = 原始坐标 + 噪声，再夹回画布内 */
 function drawPos(node) {
   const { dx, dy } = getNodeNoise(node.id);
-  return { x: node.x + dx, y: node.y + dy };
+  const halfW = NODE_W / 2;
+  const halfH = NODE_H / 2;
+  /* 夹取是必要的：最右侧的 southgate 原始 x=920，加噪声后节点框会超出 viewBox 被裁掉 */
+  return {
+    x: Math.min(VIEW.w - halfW, Math.max(halfW, node.x + dx)),
+    y: Math.min(VIEW.h - halfH, Math.max(halfH, node.y + dy)),
+  };
 }
 
 /**
