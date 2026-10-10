@@ -42,6 +42,7 @@
   --fs-term: 13px;
   --fs-status: 13px;
   --fs-node: 26px;
+  --fs-region: 24px;                      /* 大地图上的区域名 */
   --fs-ascii: min(1.7vh, 1.05vw, 15px);   /* ascii 图 60-80 列，字号按面板宽度自适应 */
   --lh-ascii: 1.12;
 }
@@ -241,6 +242,47 @@ body {
 }
 
 .map .node.is-unseen:hover .node-diamond { stroke-width: 3; }
+
+/* ---------- 大地图（区域块 / 区域通道） ---------- */
+.map .region { cursor: pointer; }
+
+.map .region-block {
+  fill: var(--node-fill);
+  stroke: var(--line);
+  stroke-width: 3;
+  stroke-dasharray: 7 5;
+  transition: fill 80ms linear, stroke-width 80ms linear;
+}
+
+.map .region-name {
+  fill: var(--node-locked);
+  font-family: var(--font-ui);
+  font-size: var(--fs-region);
+  letter-spacing: 2px;
+  text-anchor: middle;
+}
+
+/* 当前所在区域：实心高亮，与「已访问节点」用同一套黑白配色 */
+.map .region.is-current .region-block {
+  fill: var(--node-visited-fill);
+  stroke: var(--node-visited-fill);
+  stroke-width: 5;
+  stroke-dasharray: none;
+}
+
+.map .region.is-current .region-name { fill: var(--node-visited-text); }
+
+/* 非当前区域 hover：只换底色加粗边框，避免和 is-current 的描边宽度打架 */
+.map .region:not(.is-current):hover .region-block {
+  fill: var(--hover-bg);
+  stroke-width: 6;
+}
+
+/* 区域之间的通道：比普通道路更粗 */
+.map .region-link {
+  stroke: var(--line);
+  stroke-width: 6;
+}
 
 /* ---------- ascii 画面板 ---------- */
 .scene-art {
@@ -461,6 +503,27 @@ body {
   background: var(--ink);
   color: var(--paper);
 }
+
+/* ---------- 返回大地图按钮（样式与深色模式按钮一致） ---------- */
+.map-back {
+  flex: 0 0 auto;
+  margin: 2px;
+  padding: 2px 10px;
+  border: var(--border-w) solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--fs-title);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.map-back:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.map-back[hidden] { display: none; }
 
 /* ---------- 弹窗 ---------- */
 #modal-root[hidden] { display: none; }
