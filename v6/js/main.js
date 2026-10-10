@@ -11,7 +11,7 @@ import {
 import { UI, SCENES, ITEMS } from './texts.js';
 import {
   initMap, refreshMap, setMapView, getNode, getNodes, getRegion, computeClickable, computeEdgeCost,
-  getCrossRegionTarget, isShelter, HOME_ID,
+  getCrossRegionTarget, isShelter, isAreaUnlocked, REGIONS, HOME_ID,
 } from './map.js';
 import * as terminal from './terminal.js';
 import * as game from './state.js';
@@ -707,6 +707,23 @@ const debugContext = {
   },
   redrawMap: () => refreshMap({ current: game.getCurrentNode() }),
   nodes: () => getNodes(game.getCurrentArea()).map((n) => ({ id: n.id, name: n.name })),
+  areas: () => Object.keys(REGIONS).map((id) => ({
+    id,
+    name: REGIONS[id].name,
+    unlocked: isAreaUnlocked(id),
+    current: id === game.getCurrentArea(),
+  })),
+  gotoArea: (areaId) => {
+    const region = getRegion(areaId);
+    if (!region) return false;
+    const targetId = region.entranceNode || region.primaryShelter || (region.nodes[0] && region.nodes[0].id);
+    const node = targetId ? getNode(areaId, targetId) : null;
+    if (!node) return false;
+    game.visit(areaId, targetId);
+    switchMapView('area');
+    arriveAt(node);
+    return true;
+  },
   redrawStatusBar: renderStatusBar,
 };
 

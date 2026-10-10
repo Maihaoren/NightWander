@@ -4,11 +4,11 @@
  * 仅在 config.DEBUG_CONSOLE === true 时由 main.js 调用（默认关闭，模块加载但不执行）。
  */
 
-import { BATTERY_MAX, EVENTS_DEFAULT, GAME_VERSION } from './config.js';
+import { BATTERY_MAX, STORAGE_CAPACITY, EVENTS_DEFAULT, GAME_VERSION } from './config.js';
 
 /** 所有指令名（不带 "/"），供终端 Tab 补全使用 */
 export function getAllCommandNames() {
-  return ['time', 'day', 'stamina', 'staminaMax', 'battery', 'storage', 'goto', 'event', 'version', 'help'];
+  return ['time', 'day', 'stamina', 'staminaMax', 'battery', 'storage', 'goto', 'area', 'event', 'version', 'help'];
 }
 
 const HELP = [
@@ -22,9 +22,12 @@ const HELP = [
   '/staminaMax set {n}  设置体力上限（>=1，并 clamp 体力）',
   '/battery set {n}     设置电量（clamp 到 [0, 100]）',
   '/battery add {n}     电量 +n（clamp）',
-  '/goto {nodeId}   —— 传送到指定节点（/goto help 列出所有节点）',
-  '/storage set {n}     设置储物箱容量（>=0）',
-  '/storage add {n}     储物箱容量 +n',
+  '/goto {nodeId}       传送到当前区域的指定节点（/goto help 列出所有节点）',
+  '/goto {areaId}:{nodeId}  跨区域传送，例如 /goto area2:m1',
+  '/area list           列出所有区域与解锁状态',
+  '/area goto {areaId}  切换到指定区域（落在该区域入口/主安全屋）',
+  '/storage set {n}     设置「当前节点所在储物箱」的容量（>=0）',
+  '/storage add {n}     同上，容量 +n',
   '/event {on|off|reset}   —— 开关随机事件系统',
   '/version               —— 显示当前游戏版本',
   '/help                显示本列表',
@@ -37,7 +40,8 @@ const USAGE = {
   staminamax: '/staminaMax set {n}（n >= 1）',
   battery: '/battery set {n} 或 /battery add {n}',
   storage: '/storage set {n} 或 /storage add {n}',
-  goto: '/goto {nodeId}（/goto help 列出所有节点）',
+  goto: '/goto {nodeId} 或 /goto {areaId}:{nodeId}（/goto help 列出所有节点）',
+  area: '/area list 或 /area goto {areaId}',
   event: '/event {on|off|reset}',   /* 用法提示固定为这一句 */
   version: '/version',
 };
@@ -139,9 +143,15 @@ function execute(input, state, ctx) {
       const bad = needNumber(); if (bad) return bad;
       const n = num();
       if (sub !== 'set' && sub !== 'add') return `参数错误。用法：${usage}`;
-      const before = sub === 'set' ? n : state.storageCapacity + n;
-      state.storageCapacity = Math.max(0, before);
-      return join(`储物箱容量为 ${state.storageCapacity}。`, clampText(before, state.storageCapacity));
+      /* 多区域后储物箱按安全屋隔离，这里作用于「当前所在节点」那个储物箱 */
+      const key = `${state.currentArea}:${state.currentNode}`;
+      if (!state.storageCapacityByShelter) state.storageCapacityByShelter = {};
+      const before0 = Number.isFinite(state.storageCapacityByShelter[key])
+        ? state.storageCapacityByShelter[key] : STORAGE_CAPACITY;
+      const before = sub === 'set' ? n : before0 + n;
+      state.storageCapacityByShelter[key] = Math.max(0, before);
+      return join(`${key} 的储物箱容量为 ${state.storageCapacityByShelter[key]}。`,
+        clampText(before, state.storageCapacityByShelter[key]));
     }
 
     case '/event': {
@@ -172,10 +182,34 @@ function execute(input, state, ctx) {
       if (!tokens[1]) return `参数错误。用法：${usage}`;
       if (tokens[1].toLowerCase() === 'help') {
         const rows = ctx.nodes().map((n) => `${n.id.padEnd(12)}${n.name}`);
-        return ['可传送的节点：', ...rows].join('\n');
+        return [`当前区域（${state.currentArea}）可传送的节点：`, ...rows].join('\n');
       }
-      const moved = ctx.goto(tokens[1]);
-      return moved ? `已传送到 ${tokens[1]}。` : '未知节点。输入 /goto help 查看列表。';
+      /* 支持 /goto area2:m1 的跨区域写法；不带冒号即当前区域的节点 */
+      const spec = String(tokens[1]);
+      const sep = spec.indexOf(':');
+      const areaId = sep >= 0 ? spec.slice(0, sep) : undefined;
+      const nodeId = sep >= 0 ? spec.slice(sep + 1) : spec;
+      if (!nodeId) return `参数错误。用法：${usage}`;
+
+      const moved = ctx.goto(nodeId, areaId);
+      return moved ? `已传送到 ${areaId ? areaId + ':' : ''}${nodeId}。` : '未知节点。输入 /goto help 查看列表。';
+    }
+
+    case '/area': {
+      if (sub === '' || sub === 'list') {
+        const rows = (ctx.areas ? ctx.areas() : []).map((a) => {
+          const mark = a.unlocked ? '  ' : '× ';
+          return `${mark}${a.id.padEnd(8)}${a.name}${a.current ? '   ← 当前所在' : ''}`;
+        });
+        return ['区域列表（× = 未解锁）：', ...rows].join('\n');
+      }
+      if (sub === 'goto') {
+        const areaId = tokens[2];
+        if (!areaId) return `参数错误。用法：${usage}`;
+        const moved = ctx.gotoArea ? ctx.gotoArea(areaId) : false;
+        return moved ? `已切换到区域 ${areaId}。` : '未知区域。输入 /area list 查看列表。';
+      }
+      return `参数错误。用法：${usage}`;
     }
 
     default:
