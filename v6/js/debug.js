@@ -8,7 +8,7 @@ import { BATTERY_MAX, STORAGE_CAPACITY, EVENTS_DEFAULT, GAME_VERSION, DEBUG_CONS
 
 /** 所有指令名（不带 "/"），供终端 Tab 补全使用 */
 export function getAllCommandNames() {
-  return ['time', 'day', 'stamina', 'staminaMax', 'battery', 'storage', 'goto', 'area', 'event', 'version', 'help'];
+  return ['time', 'day', 'stamina', 'staminaMax', 'battery', 'storage', 'unlockall', 'goto', 'area', 'event', 'version', 'help'];
 }
 
 const HELP = [
@@ -27,9 +27,10 @@ const HELP = [
   '/area goto {areaId}  切换到指定区域（优先停在与当前区域的共享节点上）',
   '/storage set {n}     设置「当前节点所在储物箱」的容量（>=0）',
   '/storage add {n}     同上，容量 +n',
-  '/event on|off|reset  开关随机事件系统（reset = 回到默认）',
+  '/unlockall           把当前区域的所有节点标记为已访问（不跨区域、不消耗任何资源）',
+  '/event on|off|reset  开关随机事件系统（reset = 回到默认，并清空「已触发过的事件」）',
   '/event hover [on|off] 选项按钮上是否悬浮显示该选项效果（不带参数 = 看当前状态）',
-  '/event trigger {id}  强制触发指定事件（无视开关与几率，测试入口）',
+  '/event trigger {id}  强制触发指定事件（无视开关、几率与「已触发过」，测试入口）',
   '/event help          列出 /event 的全部用法与所有事件 id',
   '/version               —— 显示当前游戏版本',
   '/help                显示本列表',
@@ -44,6 +45,7 @@ const USAGE = {
   storage: '/storage set {n} 或 /storage add {n}',
   goto: '/goto {nodeId}（/goto help 列出当前区域的节点）',
   area: '/area list 或 /area goto {areaId}',
+  unlockall: '/unlockall（无参数）',
   event: '/event {on|off|reset|hover|trigger|help}',   /* 用法提示固定为这一句 */
   version: '/version',
 };
@@ -156,6 +158,39 @@ function execute(input, state, ctx) {
         clampText(before, state.storageCapacityByShelter[key]));
     }
 
+    /**
+     * /unlockall —— 把【当前所在区域】的所有节点标记为已访问。
+     *
+     * 只动「已访问 / 已探明」这两类标记，别的什么都不碰：
+     *   - 不改当前节点位置（玩家站在原地，不会因为解锁就被挪走）
+     *   - 不消耗时间 / 体力 / 电量（不经过 advanceTime / spendStamina / spendBattery）
+     *   - 不动物品、选项、事件、储物箱、gameOver 等任何其他状态
+     *   - 不跨区域：共享节点【只在当前区域】里标记，不顺手写进它所属的另一个区域
+     *
+     * 「已探明」在这个项目里不是一个单独的标记，而是【边两端都已访问】派生出来的
+     * （见 map.js 的 buildAdjacency / reachableVisited）：把节点全标成已访问之后，
+     * 本区域每条边自然都是「两端都已访问」＝已探明，所以不需要第二套数据。
+     */
+    case '/unlockall': {
+      if (sub) return `参数错误。用法：${usage}`;
+      if (state.gameOver) return '游戏已结束，无法执行。';
+
+      const areaId = state.currentArea;
+      const region = ctx.areas ? ctx.areas().find((a) => a.id === areaId) : null;
+      const areaName = region ? region.name : areaId;
+      const nodes = ctx.nodes ? ctx.nodes() : [];
+      if (nodes.length === 0) return '当前区域暂无节点';
+
+      if (!state.visitedByArea) state.visitedByArea = {};
+      if (!(state.visitedByArea[areaId] instanceof Set)) state.visitedByArea[areaId] = new Set();
+      for (const n of nodes) state.visitedByArea[areaId].add(n.id);
+
+      if (ctx.redrawMap) ctx.redrawMap();
+      return DEBUG_CONSOLE
+        ? `已解锁当前区域：${areaName} [debug] unlockall ${areaId}`
+        : `已解锁当前区域：${areaName}`;
+    }
+
     case '/event': {
       /* tokens[1] 是子命令（不是 tokens[0]）；大小写无关；state 里没有该字段时以 EVENTS_DEFAULT 兜底 */
       const arg = String(tokens[1] || '').toLowerCase();
@@ -236,8 +271,14 @@ function execute(input, state, ctx) {
       if (arg === 'reset') {
         /* reset 也把 hover 开关拨回 config 里的默认值，并同步 localStorage */
         if (typeof ctx.resetHoverEnabled === 'function') ctx.resetHoverEnabled();
+        /* v1.9.0b1.1：reset 还要清空「已触发过的事件」，
+           否则事件池被触发过的部分就再也回不来了（见需求改动 4 的 a 条）。
+           清的是 state 里那份（它会进存档），不是 localStorage —— 开关本身仍不进存档。 */
+        if (typeof ctx.clearTriggeredEvents === 'function') ctx.clearTriggeredEvents();
+        else state.triggeredEventIds = new Set();
         const hoverDefault = typeof ctx.hoverDefault === 'function' ? ctx.hoverDefault() : false;
-        return `随机事件系统：已重置为默认（${EVENTS_DEFAULT ? '开' : '关'}，悬浮提示 ${hoverDefault ? '开' : '关'}）${tail}`;
+        return `随机事件系统：已重置为默认（${EVENTS_DEFAULT ? '开' : '关'}，悬浮提示 ${hoverDefault ? '开' : '关'}${
+          '，已触发记录已清空'}）${tail}`;
       }
       return (next ? '随机事件系统：已开启' : '随机事件系统：已关闭') + tail;
     }

@@ -186,12 +186,16 @@ export function getEvent(id) {
 
 /**
  * 抽取一个事件对象。
+ *
+ * v1.9.0b1.1：只从【没触发过】的事件里抽（game.isEventTriggered）。
+ * 全都触发过 → 返回 null，调用方（rollEvent）就此静默跳过。
  * @param {function} [rng] 随机源，默认 Math.random（测试时可注入固定值）
  */
 export function pickEvent(rng = Math.random) {
-  if (EVENT_POOL.length === 0) return null;
-  const i = Math.min(EVENT_POOL.length - 1, Math.max(0, Math.floor(rng() * EVENT_POOL.length)));
-  return EVENT_POOL[i];
+  const pool = EVENT_POOL.filter((e) => !game.isEventTriggered(e.id));
+  if (pool.length === 0) return null;
+  const i = Math.min(pool.length - 1, Math.max(0, Math.floor(rng() * pool.length)));
+  return pool[i];
 }
 
 /**
@@ -202,6 +206,9 @@ export function pickEvent(rng = Math.random) {
  *   - 游戏已结束时不再触发
  * 关着的时候直接返回 null，不消耗随机数。
  *
+ * v1.9.0b1.1：概率命中、但事件池里已经没有「没触发过」的事件时，
+ * 同样返回 null —— 这一次静默跳过，终端不打任何东西、也不弹窗。
+ *
  * @returns {object|null} 命中则返回 { id, desc, options }，否则 null
  */
 export function rollEvent(nodeId = null, rng = Math.random) {
@@ -209,7 +216,7 @@ export function rollEvent(nodeId = null, rng = Math.random) {
   if (game.isGameOver()) return null;
   if (!(rng() < EVENT_CHANCE)) return null;          /* 没命中：这一次不抽事件 */
   void nodeId;                                       /* 落点由 main.js 在执行效果时传回来 */
-  return pickEvent(rng);
+  return pickEvent(rng);                             /* 池子空了会返回 null → 静默跳过 */
 }
 
 /**
@@ -229,6 +236,12 @@ export function runEventOption(event, index, nodeId = null) {
 
   const node = getNode(nodeId || game.getCurrentNode());
   const outcome = option.effect({ node }) || {};
+
+  /* v1.9.0b1.1 改动 4-3：效果执行完就把这个事件记成「已触发过」，之后不再进随机池。
+     放在这里（而不是掷骰那一刻）是因为两条触发路径（自然掷骰 / /event trigger）
+     最终都会走到本函数：玩家选完任意一个选项、效果执行完，就算这个事件消费掉了。
+     /event trigger 仍然能强制触发已记过的事件（它绕过 pickEvent 的过滤）。 */
+  game.markEventTriggered(event.id);
 
   return {
     id: event.id,

@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b1` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b1.1` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `4` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -34,6 +34,130 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.9.0b1.1] — 2026-10-11 —— 地图放大去重叠 + 菱形缩小 + /unlockall + 移动耗时 ×1.5 + 事件只触发一次 + 大地图连线样式
+
+**回档点 / git 标签**：`v1.9.0b1.1`
+
+> 存档结构版本号**不变（仍是 v4）**：本块只新增一个可选兼容字段 `triggeredEventIds`，
+> 旧档（没有该字段）读进来按空数组处理，**不算无效存档**。
+
+### 新增
+
+- **`/unlockall` 调试指令**（`js/debug.js`）：把**当前所在区域**的所有节点标记为已访问。
+  - 输出「已解锁当前区域：{区域名}」，`DEBUG_CONSOLE` 下额外附 `[debug] unlockall {区域 id}`
+  - **不跨区域**：共享节点只在当前区域里标记，不写进它所属的另一个区域
+  - 不改当前节点、不消耗时间/体力/电量、不动物品/选项/事件/储物箱/`gameOver`
+  - `gameOver` 后拦截；带参数报用法；区域没有节点时提示「当前区域暂无节点」
+  - 「已探明」在本项目里是**派生量**（边两端都已访问就自动已探明，见 `buildAdjacency`），
+    所以不需要第二套数据 —— 节点全标已访问，本区域每条边自然都是已探明
+  - 已加进 `getAllCommandNames()`（Tab 补全）与 `/help`
+- **state 新增 `triggeredEventIds`**（内部 `Set`，快照里是数组）+ 四个接口
+  `isEventTriggered` / `markEventTriggered` / `clearTriggeredEvents` / `getTriggeredEventIds`。
+- **大地图区域通道标签**新增专用颜色变量 `--link-label`（浅色 `#3d3d3d` / 深色 `#d8d8d8`），
+  刻意**不复用 `--muted`** —— muted 还用在不可达节点名、面板计数等地方，改它会连带一片。
+
+### 变更
+
+- **改动 1：地图 UI 加大 + 菱形缩小**
+  - 画布 `VIEW` 1000×600 → **1250×750**（×1.25），`index.html` 的 `viewBox` 同步。
+    节点的**绘制**位置按同一系数摊开（`map.js` 新增 `DRAW_SCALE = 1.25`，只作用于 `drawPos`）。
+  - **节点框（130×56）与噪声（±35）一个都没动** —— 所以「节点尺寸 : 节点间距」变小、重叠消失。
+  - **耗时完全不受影响**：`NODES` 里的 x/y 仍是算耗时的唯一依据（`drawPos` 才乘 `DRAW_SCALE`）。
+    这一步很关键：如果连坐标一起乘 1.25 再让耗时跟着变，会和改动 3 的 ×1.5 叠成 ×1.875。
+  - 「能到未到」的菱形缩到节点框的 **65%**（`DIAMOND_SCALE`，需求建议 60%~70% 取中）。
+  - **点击区域不变**：未访问节点的节点框不再 `display:none`，改成「透明 + 无描边 + `pointer-events: all`」，
+    于是菱形缩小只是视觉变化，热区仍是整块节点框（hover 态也一并钉成透明，避免冒出方框）。
+- **改动 5：大地图连接样式**
+  - `REGION_BOX` 重新布局：方框 ×1.15，**空隙 ×1.5**（横向 30→45，纵向 30/50/40→61/75/60），
+    整体重新居中到 1250×750 画布（左右留白对称、上下留白对称）。
+  - `--fs-link` 15px → **20px**（+33%）；`.region-link-label` 改用 `--link-label` 并加 `font-weight: 600`。
+- **改动 3：移动耗时 ×1.5** —— `DISTANCE_TO_TIME_RATIO` **3.0 → 4.5**。
+  这是「移动基础耗时」那一个分量（边耗时 = 距离 × 本系数 × 支路惩罚），
+  改它等于主路与支路**统一** ×1.5。`DEFAULT_TRAVEL_COST` 900 → 1350 同口径跟随。
+  `MOVE_JITTER`（±10%）与「预览/实际共用同一个随机值」的机制都没动。
+- **改动 4：事件不再多次触发**
+  - 掷概率选事件时只从**没触发过**的事件里选（`pickEvent` 过滤）；
+    全都触发过 → `rollEvent` 返回 `null`，**静默跳过**（终端不打字、不弹窗）。
+  - 事件被消费的时点放在 `events.runEventOption()` 末尾 —— 两条触发路径
+    （自然掷骰 / `/event trigger`）最终都会走到它，正好对应「无论玩家选哪个选项、效果执行完」。
+  - 不再有任何「每天重置」逻辑。
+  - `/event reset` → 主开关回 `EVENTS_DEFAULT`、hover 回默认值、并**清空 `triggeredEventIds`**。
+  - `/event trigger {id}` → 无视 on/off、不走概率、**且无视 `triggeredEventIds`**（已触发过的仍可强制触发）。
+  - 事件开关（`game_events_enabled` / `game_event_hover`）仍**不进存档**；`triggeredEventIds` **进存档**。
+- `/event` 的 help / 用法文案同步（reset 那句补上「并清空已触发记录」）。
+- `GAME_VERSION`：`v1.9.0b1` → `v1.9.0b1.1`。
+
+### 变更清单
+
+| 文件 | 改动 |
+|---|---|
+| `v6/js/map.js` | 新增 `DRAW_SCALE` / `DIAMOND_SCALE`；`VIEW` ×1.25；`drawPos` 乘 `DRAW_SCALE`；菱形用 `dd`；`REGION_BOX` 重排 + 新增 `worldViewBox()`；`setMapView` 里新增 `applyViewBox()` 按视图设 viewBox |
+| `v6/style.css` | `.app` 列宽 30fr/70fr → **40fr/60fr**；`.col--left` 行 55% → **45%**；`--fs-link` 15→20px；新增 `--link-label`（两套主题）；`.region-link-label` 换色加粗；未访问节点框改「透明 + 可点」 |
+| `v6/index.html` | `viewBox` 1000×600 → **1250×750**（与 `VIEW` 同步） |
+| `v6/js/debug.js` | 新增 `/unlockall`（含 `getAllCommandNames` / `HELP` / `USAGE`）；`/event reset` 清 `triggeredEventIds`；`/event trigger` 的 help 文案更新 |
+| `v6/js/events.js` | `pickEvent` 只抽未触发过的；`rollEvent` 池空时静默返回 null；`runEventOption` 末尾 `markEventTriggered` |
+| `v6/js/state.js` | 新增 `triggeredEventIds` 字段 + 4 个接口；`toSnapshot` / `replaceFromSnapshot` 带上它（缺失当空集） |
+| `v6/js/saveSystem.js` | `triggeredEventIds` 进 `REQUIRED`，但**缺失时补空数组后再校验**（可选兼容）；新增「必须是数组」的类型检查；`VERSION` 不变（仍 4） |
+| `v6/js/config.js` | `DISTANCE_TO_TIME_RATIO` 3.0→4.5；`DEFAULT_TRAVEL_COST` 900→1350；`GAME_VERSION` → `v1.9.0b1.1` |
+| `v6/js/main.js` | debugContext 新增 `clearTriggeredEvents` 钩子（唯一改动） |
+| `v6/js/texts.js` / `inventory.js` / `terminal.js` / `modal.js` | **未改动** |
+
+### 验证
+
+- 新增 `.tools/nw_b11_check.mjs`：**81 条断言，全部通过**：
+  - 改动 1：`VIEW` = 1250×750、`NODE_W/H` 与 `NOISE_RANGE` 未动、`index.html` viewBox 同步；
+    **24 个节点全揭示时按真实渲染图元算，视觉重叠 0 对**（用最严口径：任意「矩形/菱形」组合都不重叠，
+    最小余量 **+14.9**；同一口径在放大前是 **-2.6、冲突 1 对（plaza|apartment）** ——
+    这正好是用户报的「部分图标重叠」）；菱形实测为节点框的 **0.650**；
+    未访问节点的节点框仍是完整尺寸且 CSS 没把它 `display:none`；
+    区域视图 viewBox = `0 0 1250 750`，大地图 viewBox 紧贴方框且完整包住所有方框、每边留白 ≤30；
+    其他节点状态（is-visited / is-current / is-blocked）规则原样。
+  - 改动 5：空隙实测 45/45/45（横向）与 61/75/60（纵向），方框互不重叠；
+    内容占用 x 85..1165 / y 18..733，**左右与上下留白都对称**、没超出画布；
+    重新布局后四个方向（西/北/东/南）仍正确；`--fs-link` 20px；`--link-label` 两套主题都有定义；
+    **对比度实测**：浅色 3.36 → **10.86**、深色 4.53 → **13.64**（都过 WCAG AA）。
+  - 改动 3：`DISTANCE_TO_TIME_RATIO` = 4.5、`DEFAULT_TRAVEL_COST` = 1350、支路惩罚未动；
+    **实测同一跳**（home→plaza 距离 175）**旧 525s → 新 788s，正好 1.5 倍**；
+    ±10% 随机机制原样，预览与实际共用同一缓存值。
+  - 改动 2：指令进 Tab 补全与 `/help`；输出与 `[debug]` 后缀正确；当前区域全节点已访问；
+    不跨区域（其他 4 个区域访问数仍为 0）；不改当前节点、不消耗三种资源、不动物品/储物箱/事件/gameOver；
+    重复执行幂等；`gameOver` 拦截；无节点区域提示；带参数报用法。
+  - 改动 4：字段名/类型/快照数组/`REQUIRED` 收录；未触发时能抽全 5 个；
+    **标掉一个后连抽 300 次一次都没抽到它、其余 4 个仍抽得到**；
+    全部触发过 → `rollEvent` 返回 null 且终端无输出；`/event trigger` 仍能强制触发已触发过的事件；
+    `/event reset` 清空后又能抽全 5 个；**伪造缺字段的旧档仍有效且被补成空数组**；往返还原正确。
+  - 回归：b1 的 7 区域 / 25 节点 / 26 条边 / 4 个共享节点 / 怀表位置不变；
+    **a 块的日记与作者留言仍可读**、起步 3 件仍在储物箱、物品表仍是那 4 件。
+- **反证**（三项都确认是承重的）：
+  - `DRAW_SCALE` 改回 1.0 → **6 条 FAIL**（画布尺寸、两处 viewBox、居中、内容超出）；
+  - `DIAMOND_SCALE` 改回 1.0 → **2 条 FAIL**（菱形比例、节点框比菱形大）；
+  - 去掉 `pickEvent` 的过滤 → **5 条 FAIL**（抽到已触发事件、池空仍返回事件、导入后不跳过）。
+  三处均已还原并复测全绿。
+- 冒烟：`nw_b1_check.mjs`（已把白线判定里写死的 1000/600 改成从 `map.VIEW` 读）、
+  `nw_boot_check.mjs`、`nw_link_check.mjs`、`nw_r13_check.mjs`、`nw_r14_check.mjs`、
+  `v6/js` 全部文件 `node --check` 均通过；12 个改动文件的 UTF-8 BOM 与 `HEAD` 逐字节一致。
+
+### 已知限制 / 遗留
+
+- **画布放大会让画面元素的实际像素变小**：面板宽度虽然 +33%（左栏 30%→40%），但画布同时 ×1.25，
+  所以真实缩放比只是从约 0.375 提到约 0.40。**节点名实测仍然只有 ~6.5px**，偏小。
+  这是「一个区域塞 24 个节点」的固有限制：想同时做到「节点大」与「不重叠」，
+  只能继续加大面板或减少单区节点数。本块按需求只改了尺寸与菱形，**没有动节点字号**。
+- **左上角左栏从 30% 加宽到 40%**，右栏（画面/终端）相应从 70% 收到 60%。
+  终端是纯文本，60% 宽度仍然充裕，但这是一处布局再平衡 —— 如果你更希望右栏保持 70%，
+  说一声我把地图改成只加高不加宽。
+- **大地图改成了按视图设置 viewBox**（区域地图整张画布、大地图紧贴方框）。
+  这是为了让连接标签在面板里保持可读；副作用是大地方块之间的**相对位置不变但整体被放大**，
+  与区域地图不再共用同一套缩放。
+- `triggeredEventIds` 记录的是「事件被消费」，不是「弹窗出现过」：
+  如果玩家在弹窗开着的时候直接关掉页面，那个事件**不算已触发**，下次还会进池。
+  （弹窗没有关闭按钮，所以正常玩法下不会发生。）
+- `/unlockall` 只标当前区域，**不会**顺手把共享节点在对面区域的访问记录也写上；
+  所以解锁完废城之后，大地图上「巨墙 / 荒野 / 东海岸 / 工业区」仍然要靠正常走过去才亮。
+- 旧套件 `nw_r8`–`nw_r16`（含 `nw_e2e2`、`nw_r14_hover`）自 v1.9.0b1 起已作废，本块未恢复。
 
 ---
 

@@ -23,7 +23,11 @@ export const SAVE_VERSION = VERSION;
 
 const REQUIRED = ['day', 'elapsedSeconds', 'currentArea', 'mapView', 'currentNode', 'visitedByArea',
   'stamina', 'staminaMax', 'battery', 'storageCapacityByShelter', 'sheltersByArea',
-  'equipped', 'pocket', 'collectedItems', 'usedOptions', 'usedGroups', 'resolvedMustResolve'];
+  'equipped', 'pocket', 'collectedItems', 'usedOptions', 'usedGroups', 'resolvedMustResolve',
+  /* v1.9.0b1.1 新增：已触发过的随机事件 id。
+     它列在 REQUIRED 里，但**缺失不算无效存档** —— 见下面 deserialize 里的补默认值。
+     这样「字段表完整」与「旧档仍能读」两件事同时成立，存档版本号也不用动（仍是 v4）。 */
+  'triggeredEventIds'];
 
 /** 快照 → 存档字符串（Base64） */
 export function serialize(snapshot) {
@@ -47,7 +51,16 @@ export function deserialize(text) {
     if (!payload || payload.v !== VERSION || !payload.data) return null;
 
     const data = payload.data;
+
+    /* 【v1.9.0b1.1 可选兼容】triggeredEventIds 缺失 / 为 null 时补空数组，
+       然后才过 REQUIRED 的存在性检查 —— 于是「字段列在 REQUIRED 表里」
+       与「旧档（没有这个字段）仍然能读」同时成立，存档版本号不用动。 */
+    if (data.triggeredEventIds === undefined || data.triggeredEventIds === null) {
+      data.triggeredEventIds = [];
+    }
+
     if (!REQUIRED.every((key) => data[key] !== undefined && data[key] !== null)) return null;
+    if (!Array.isArray(data.triggeredEventIds)) return null;
     if (!Array.isArray(data.pocket)) return null;
     if (!data.usedOptions || typeof data.usedOptions !== 'object' || !Array.isArray(data.usedGroups)) return null;
     if (!data.equipped || typeof data.equipped !== 'object') return null;

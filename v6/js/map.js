@@ -25,7 +25,21 @@ import { DEFAULT_TRAVEL_COST, DISTANCE_TO_TIME_RATIO, SECONDARY_ROAD_PENALTY } f
 import * as game from './state.js';
 import { formatDuration, formatClock } from './timeSystem.js';
 
-export const VIEW = { w: 1000, h: 600 };
+/**
+ * 地图画布尺寸。
+ *
+ * v1.9.0b1.1：画布整体 ×1.25（1000×600 → 1250×750），并把节点的【绘制】位置按同一系数摊开。
+ * 关键点：节点框（NODE_W/NODE_H）与噪声（NOISE_RANGE）**一个都没动**，
+ * 所以「节点尺寸 : 节点间距」变小，24 个节点挤在一起的重叠就消失了
+ * （实测最近一对 station↔subway 的最小余量从 -2.6 变成 +14.9）。
+ *
+ * 为什么不是「把节点坐标乘 1.25 再算耗时也乘 1.25」：那样移动耗时会跟着放大 1.25 倍，
+ * 和 v1.9.0b1.1 改动 3 要的「×1.5」叠在一起就变成了 ×1.875 —— 手感会失控。
+ * 这里只在【绘制】时摊开（见 drawPos），NODES 里的 x/y 仍是算耗时的唯一依据，
+ * 所以地图变大不影响任何数值。
+ */
+const DRAW_SCALE = 1.25;
+export const VIEW = { w: Math.round(1000 * DRAW_SCALE), h: Math.round(600 * DRAW_SCALE) };
 export const NODE_W = 130;
 export const NODE_H = 56;
 export const HOME_ID = 'home';
@@ -289,15 +303,35 @@ export const REGIONS = {
  *   → coast = east、→ industry = south   （四个方向全部对上）
  * 占位区域也必须有坐标，否则方向算不出来、白线就画不了。
  */
+/* v1.9.0b1.1：方框本身 ×1.15，横向/纵向空隙 ×1.5（30→45、50→75、40→60），
+   整块布局重新居中到 1250×750 的画布里。空隙变大后，
+   「墙门」这类区域通道标签（字号也调大了，见 style.css 的 --fs-link）才有呼吸空间。 */
 const REGION_BOX = {
-  wilderness: { x: 390, y: 10, w: 220, h: 70 },
-  giantwall: { x: 20, y: 130, w: 150, h: 130 },
-  wasteland: { x: 200, y: 110, w: 350, h: 170 },
-  coast: { x: 580, y: 120, w: 170, h: 140 },
-  dock: { x: 790, y: 145, w: 150, h: 90 },
-  industry: { x: 330, y: 330, w: 300, h: 110 },
-  island: { x: 430, y: 480, w: 180, h: 100 },
+  wilderness: { x: 378, y: 18, w: 253, h: 81 },
+  giantwall: { x: 85, y: 183, w: 173, h: 150 },
+  wasteland: { x: 303, y: 160, w: 403, h: 196 },
+  coast: { x: 751, y: 178, w: 196, h: 161 },
+  dock: { x: 992, y: 206, w: 173, h: 104 },
+  industry: { x: 332, y: 431, w: 345, h: 127 },
+  island: { x: 401, y: 618, w: 207, h: 115 },
 };
+
+/**
+ * 覆盖所有区域方框的外接矩形（含少量留白）。
+ * v1.9.0b1.1 改动 5.3 用：大地图按这个范围设置 viewBox，
+ * 于是方框能填满面板、区域通道标签也保持在可读尺寸，
+ * 而不是被一张 1250×750 的全画布缩得很小。
+ */
+function worldViewBox() {
+  const boxes = Object.values(REGION_BOX);
+  if (!boxes.length) return { x: 0, y: 0, w: VIEW.w, h: VIEW.h };
+  const pad = 24;
+  const x0 = Math.min(...boxes.map((b) => b.x)) - pad;
+  const y0 = Math.min(...boxes.map((b) => b.y)) - pad;
+  const x1 = Math.max(...boxes.map((b) => b.x + b.w)) + pad;
+  const y1 = Math.max(...boxes.map((b) => b.y + b.h)) + pad;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
 
 /**
  * 改动 6 用：fromArea 看过去，toArea 在哪个方向 —— 'north' | 'south' | 'east' | 'west'。
@@ -623,15 +657,20 @@ function viewPos(regionId, node) {
   return over ? { x: over.x, y: over.y } : { x: node.x, y: node.y };
 }
 
-/** 节点实际绘制坐标 = 该区域的视觉基准坐标 + 固定噪声，再夹回画布内（否则贴边节点会被裁掉） */
+/**
+ * 节点实际绘制坐标 = 该区域的视觉基准坐标 × DRAW_SCALE + 固定噪声，再夹回画布内（否则贴边节点会被裁掉）。
+ *
+ * 注意 DRAW_SCALE 只作用在【这里】（绘制），NODES 里的 x/y 保持原值不变 ——
+ * computeEdgeCost 算耗时读的是原始坐标，所以「地图摊开」不会改任何数值（见 VIEW 的注释）。
+ */
 function drawPos(node, regionId) {
   const { dx, dy } = getNodeNoise(node.id);
   const base = viewPos(regionId, node);
   const halfW = NODE_W / 2;
   const halfH = NODE_H / 2;
   return {
-    x: Math.min(VIEW.w - halfW, Math.max(halfW, base.x + dx)),
-    y: Math.min(VIEW.h - halfH, Math.max(halfH, base.y + dy)),
+    x: Math.min(VIEW.w - halfW, Math.max(halfW, base.x * DRAW_SCALE + dx)),
+    y: Math.min(VIEW.h - halfH, Math.max(halfH, base.y * DRAW_SCALE + dy)),
   };
 }
 
@@ -822,6 +861,9 @@ export function computeMoveCost(fromId, toId, regionId, visited = null) {
 const NODE_SCALE_REF = 6;      /* 揭示这么多节点时缩放系数正好是 1 */
 const NODE_SCALE_MIN = 0.62;
 const NODE_SCALE_MAX = 1.18;
+
+/** 「能到未到」的菱形相对节点框的比例（v1.9.0b1.1 新增；65% = 需求建议的 60%~70% 取中） */
+const DIAMOND_SCALE = 0.65;
 
 /**
  * 节点视觉尺寸的缩放系数。
@@ -1162,6 +1204,10 @@ function renderArea(regionId) {
   const w = NODE_W * scale;
   const h = NODE_H * scale;
   const d = w / 2;
+  /* v1.9.0b1.1 改动 1.2：「能到未到」节点的菱形缩到 65%。
+     只缩这个标记本身的视觉尺寸 —— 点击区域仍沿用节点框（见 style.css 里
+     .node.is-unseen .node-rect 改成透明但可点），所以手感不变、图更清爽。 */
+  const dd = d * DIAMOND_SCALE;
   const nameSize = Math.max(11, Math.round(26 * scale));    /* 文字跟着缩，但有下限保证可读 */
   const hereSize = Math.max(10, Math.round(11 * scale));
   if (svgEl && svgEl.style && typeof svgEl.style.setProperty === 'function') {
@@ -1235,7 +1281,7 @@ function renderArea(regionId) {
     }));
     group.appendChild(svgNode('polygon', {
       class: 'node-diamond',
-      points: `${p.x},${p.y - d} ${p.x + d},${p.y} ${p.x},${p.y + d} ${p.x - d},${p.y}`,
+      points: `${p.x},${p.y - dd} ${p.x + dd},${p.y} ${p.x},${p.y + dd} ${p.x - dd},${p.y}`,
     }));
     /* 黑暗地点画【圆】：半径取节点框的半个宽（节点框是扁矩形，用宽度才能把名字圈进去）。
        矩形与菱形由 CSS 在 .is-dark 时隐藏，配色沿用通用节点变量（见 style.css）。 */
@@ -1294,9 +1340,26 @@ export function setMapView(next) {
   hideTip();
 
   clearLayers();
+  applyViewBox();
   if (view === 'world') renderWorld();
   else renderArea(game.getCurrentArea());
   return view;
+}
+
+/**
+ * 按当前视图设置 SVG 的 viewBox（v1.9.0b1.1 改动 5.3）。
+ *   区域地图 → 整个画布 0 0 VIEW.w VIEW.h
+ *   大地图   → 只框住所有区域方框（worldViewBox），于是方框能填满面板、
+ *              区域通道标签（「墙门」这类）保持可读，而不是被整张画布缩得极小。
+ */
+function applyViewBox() {
+  if (!svgEl || typeof svgEl.setAttribute !== 'function') return;
+  if (view === 'world') {
+    const b = worldViewBox();
+    svgEl.setAttribute('viewBox', `${b.x} ${b.y} ${b.w} ${b.h}`);
+  } else {
+    svgEl.setAttribute('viewBox', `0 0 ${VIEW.w} ${VIEW.h}`);
+  }
 }
 
 export function getMapView() {

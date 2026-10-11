@@ -9,6 +9,10 @@
   --ink: #000000;
   --line: #000000;
   --muted: #8c8c8c;
+  /* v1.9.0b1.1：大地图「区域通道标签」（墙门 / 北关 这类接口名）专用色。
+     不从 --muted 改起 —— muted 还用在别处（不可达节点名、面板计数…），
+     单独开一个变量才只影响这处文本。浅色主题：明显加深以提高对比度。 */
+  --link-label: #3d3d3d;
   --hover-bg: #efefef;
 
   --node-fill: #ffffff;
@@ -51,7 +55,7 @@
   --fs-node: 26px;
   --fs-region: 24px;                      /* 大地图上的区域名 */
   --fs-mapnote: 11px;                     /* 「你在这里」小字 */
-  --fs-link: 15px;                        /* 大地图区域通道标签（要比区域块名 24px 明显小，但得看得清） */
+  --fs-link: 20px;                        /* 大地图区域通道标签（v1.9.0b1.1：15px → 20px，+33%） */
   --fs-ascii: min(1.7vh, 1.05vw, 15px);   /* ascii 图 60-80 列，字号按面板宽度自适应 */
   --lh-ascii: 1.12;
 }
@@ -61,6 +65,8 @@ html[data-theme="dark"] {
   --ink: #f2f2f2;
   --line: #f2f2f2;
   --muted: #7a7a7a;
+  /* 深色主题：通道标签反过来要提亮才够对比（浅色 #3d3d3d 在深底上根本看不见） */
+  --link-label: #d8d8d8;
   --hover-bg: #202020;
 
   --node-fill: #0d0d0d;
@@ -100,11 +106,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ---------- 布局：左 30% / 右 70%（左栏内部仍是 55 / 45 不变） ---------- */
+/* ---------- 布局：左 40% / 右 60%（v1.9.0b1.1：左栏 30%→40%，给地图更多实际像素；
+   左栏内部改成 45 / 55，地图那一格从 45% 提到 55%） ---------- */
 .app {
   height: 100vh;
   display: grid;
-  grid-template-columns: 30fr 70fr;
+  grid-template-columns: 40fr 60fr;
   gap: var(--gap);
   padding: var(--gap);
 }
@@ -120,7 +127,7 @@ body {
   min-height: 0;
 }
 
-.col--left { grid-template-rows: 55% minmax(0, 1fr); }
+.col--left { grid-template-rows: 45% minmax(0, 1fr); }
 .col--right { grid-template-rows: 55% var(--status-h) minmax(0, 1fr); }
 
 /* ---------- 面板 ---------- */
@@ -262,15 +269,18 @@ body {
   pointer-events: none;
 }
 
-/* 未访问但可点：空白虚线框，不显示名称 */
-.map .node.is-unseen .node-rect {
+/* 未访问但可点：菱形标记（v1.9.0b1.1 起菱形缩到节点框的 65%，见 map.js 的 DIAMOND_SCALE）。
+   【关键】节点框不再 display:none，而是「透明 + 无描边 + 可点」：
+     - 视觉上完全看不见（不改变「未访问只显示菱形」的观感）
+     - 但整块节点框仍然是点击热区，于是菱形缩小后点击区域仍沿用节点半径（需求改动 1.2）
+   hover 时也不能冒出一个框，所以把 hover 态一并按同优先级钉成透明。 */
+.map .node.is-unseen .node-rect,
+.map .node.is-unseen:hover .node-rect {
   fill: transparent;
-  stroke: var(--dashed-node-color);   /* 1px 虚线，两种主题下都有对比度 */
-  stroke-width: 1;
-  stroke-dasharray: 5 4;
+  stroke: none;
+  pointer-events: all;
 }
 
-.map .node.is-unseen .node-rect,
 .map .node.is-unseen .node-name { display: none; }
 
 /* 未访问可点：琥珀菱形 */
@@ -417,11 +427,13 @@ body {
   stroke-width: 6;
 }
 
-/* 区域通道的小标签：字号明显小于区域块名（24px），用次要文字色，两种主题下都可读 */
+/* 区域通道的小标签（接口节点名）：v1.9.0b1.1 起字号 15→20px、颜色改用专用的
+   --link-label（浅色主题加深、深色主题提亮），对比度比原来的 --muted 明显更高 */
 .map .region-link-label {
-  fill: var(--muted);
+  fill: var(--link-label);
   font-family: var(--font-ui);
   font-size: var(--fs-link);
+  font-weight: 600;
   text-anchor: middle;
   pointer-events: none;
 }

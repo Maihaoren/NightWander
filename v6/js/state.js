@@ -36,6 +36,10 @@ export const state = {
   pocket: [],
   collectedItems: new Set(),   /* 已经被捡走过的节点物品 id（保证不会反复捡到同一个） */
   resolvedMustResolve: new Set(), /* mustResolve 已解除的节点 id（节点 id 全局唯一，直接用 id 当键；可存档） */
+  /* v1.9.0b1.1：已经触发过的随机事件 id。每个事件全局只触发一次，触发过的从池里排除。
+     与 collectedItems 同样的口径：内部是 Set，进快照时转数组。
+     注意它【要进存档】，而事件开关（game_events_enabled / game_event_hover）不进存档。 */
+  triggeredEventIds: new Set(),
   eventsEnabled: false,        /* 随机事件系统开关（从 localStorage 读，功能待实现） */
   gameOver: false,
   options: [],
@@ -124,6 +128,29 @@ export function isMustResolveResolved(nodeId) {
 
 export function markMustResolveResolved(nodeId) {
   state.resolvedMustResolve.add(String(nodeId));
+}
+
+/* ---------------- 已触发过的随机事件（v1.9.0b1.1） ----------------
+   每个事件全局只触发一次：events.js 掷骰时用它把触发过的事件从池里排除。
+   强制的 /event trigger 不受它限制（需求改动 4 的 b 条）。 */
+
+export function isEventTriggered(eventId) {
+  return state.triggeredEventIds.has(String(eventId));
+}
+
+/** 标记某个事件已触发过（由 events.js 在执行完效果后调用） */
+export function markEventTriggered(eventId) {
+  state.triggeredEventIds.add(String(eventId));
+}
+
+/** /event reset 用：清空已触发记录，把事件池恢复成完整的一份 */
+export function clearTriggeredEvents() {
+  state.triggeredEventIds = new Set();
+}
+
+/** 只读快照，供 UI / 测试查看（返回副本，外部改不到内部那份） */
+export function getTriggeredEventIds() {
+  return new Set(state.triggeredEventIds);
 }
 
 /* ---------------- 体力 ---------------- */
@@ -387,6 +414,9 @@ export function toSnapshot() {
     pocket: state.pocket.map((item) => ({ ...item })),
     collectedItems: [...state.collectedItems],
     resolvedMustResolve: [...state.resolvedMustResolve],
+    /* v1.9.0b1.1：已触发过的事件 id（数组）。存档版本号不变（v4），
+       但这是新增字段 —— 读档时缺失按空数组处理，不算无效存档（见 saveSystem.deserialize）。 */
+    triggeredEventIds: [...state.triggeredEventIds],
     usedOptions: persistent,           /* 只有非 perDay 的部分 */
     usedGroups: [...usedGroups].map(([id, set]) => [id, [...set]]),
   };
@@ -428,6 +458,8 @@ export function replaceFromSnapshot(data) {
   state.collectedItems = new Set(data.collectedItems || []);
   /* 旧存档没有这个字段：缺省为空集（即都没解除），向后兼容，不需要升存档版本 */
   state.resolvedMustResolve = new Set(data.resolvedMustResolve || []);
+  /* v1.9.0b1.1 新增字段，同样是「缺失就当空集」的可选兼容 */
+  state.triggeredEventIds = new Set(data.triggeredEventIds || []);
   state.gameOver = false;
 
   usedOptions.clear();

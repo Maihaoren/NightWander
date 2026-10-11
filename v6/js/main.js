@@ -1414,6 +1414,8 @@ const debugContext = {
   resetHoverEnabled: () => events.resetHoverEnabled(),
   hoverDefault: () => EVENT_HOVER_SHOW_EFFECT,
   eventSwitchDefault: () => EVENTS_DEFAULT,
+  /* /event reset 用：清空「已触发过的事件」，让事件池恢复成完整一份（v1.9.0b1.1） */
+  clearTriggeredEvents: () => game.clearTriggeredEvents(),
   /** /event trigger 前的准入检查：游戏结束 / 有弹窗没处理 / 正在移动 都拒绝 */
   canTriggerEvent: () => !game.isGameOver() && !isFlowBusy(),
   /** 强制触发（无视开关与几率，DEBUG_CONSOLE 下才有入口）；走与自然触发完全一致的事件流程 */
