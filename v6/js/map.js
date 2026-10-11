@@ -150,7 +150,49 @@ export const NODES = {
   shipyard: defNode('shipyard', 720, 440, ['charger']),
   observationdeck: defNode('observationdeck', 700, 180, []),
   coastalroad: defNode('coastalroad', 200, 200, []),
+
+  /* ---- 荒野 wilderness（v1.9.0b3 落地，7 个内部节点） ----
+     入口是共享节点 northgate（北关，坐标在废城那一组里：850,50 = 废城北缘）。
+     除了驿站，6 个内部节点全部 isDark —— 这是黑暗机制的第一批启用点：
+     身处其中电量 2% + 1% = 3%/游戏小时，没电进不去，在里面掉到 0 会断电回家。
+     禁区 jinqu 还额外带一个「解锁前完全不渲染」的门槛（见 LOCKED_NODES）。 */
+  yizhan: defNode('yizhan', 500, 400, []),                            /* 驿站：荒野入口 + 主安全屋（不黑暗） */
+  xiaoshulin: defNode('xiaoshulin', 500, 260, [], false, true),       /* 小树林 */
+  senlin: defNode('senlin', 330, 190, [], false, true),               /* 森林 */
+  senlinshenchu: defNode('senlinshenchu', 200, 150, [], false, true), /* 森林深处（解锁门槛之一） */
+  jinqu: defNode('jinqu', 95, 60, ['goldenkey'], false, true),        /* 禁区：金钥匙放这儿 */
+  zhaoze: defNode('zhaoze', 760, 230, [], false, true),               /* 沼泽 */
+  zhaozeshenchu: defNode('zhaozeshenchu', 880, 110, [], false, true), /* 沼泽深处（解锁门槛之一） */
 };
+
+/* ===============================================================
+   1.6 节点级解锁门槛（v1.9.0b3 改动 3）
+   ---------------------------------------------------------------
+   禁区 jinqu 一开始完全不渲染，也不可进入；等【森林深处】与【沼泽深处】都到达过，
+   它才按机制 A 正常参与渲染（相邻当前节点 → 菱形；不相邻 → 仍不渲染）。
+
+   实现：解锁状态**完全由已访问集合推导**（visitedByArea 已经在存档里），
+   所以不新增任何存档字段 —— 读档后门槛状态自动恢复（见 saveSystem 的 v4 字段表）。
+   一旦满足就永久保持（visited 只增不减，所以天然不回退）。
+
+   判定挂在 renderArea 的 stateOf() 里：未解锁的节点直接不渲染（当前节点自己例外，
+   免得 debug 传送过去之后地图上没有自己这一格）。
+   =============================================================== */
+const LOCKED_NODES = {
+  jinqu: ['senlinshenchu', 'zhaozeshenchu'],
+};
+
+/** 该节点是否已经解锁（没有门槛的节点恒为 true） */
+export function isNodeUnlocked(nodeId) {
+  const need = LOCKED_NODES[nodeId];
+  if (!need) return true;
+  return need.every((id) => isNodeVisited(id));
+}
+
+/** 还没解锁的节点 id 列表 —— main.js 用它比较「这一趟有没有新解锁了什么」 */
+export function lockedNodeIds() {
+  return Object.keys(LOCKED_NODES).filter((id) => !isNodeUnlocked(id));
+}
 
 /* ===============================================================
    1.5 地点资源交换的分配（v1.9.0b2 新增；v1.9.0b2.1 补齐废城 + 改成到达自动弹）
@@ -167,6 +209,10 @@ export const NODES = {
      工业区 11 个 → 目标 4 时间 + 2 资源 + 5 无 → 原 4/1/6，补 1 个资源（南关）
      东海岸  7 个 → 目标 3 时间 + 1~2 资源 + 2~3 无 → 原 2/2/3，补 1 个时间（东关）
      发电厂 / 码头关按比例归入「无交互」。
+   荒野（v1.9.0b3 改动 6）：无物品地点 5 个（禁区有金钥匙、驿站是安全屋、北关是共享节点，
+     三者都不计入）→ 2/5 × 5 = 2 时间、1/5 × 5 = 1 资源、2/5 × 5 = 2 无交互。
+     落点：小树林 x_scav、森林 x_nap（时间型）；沼泽 x_s2e（资源型）；
+     两处「深处」保留无交互（它们是禁区门槛，不额外挂东西）。
 
    挂上去的是一个**可点的地点选项**（v1.9.0b2.2 改动 2 从 b2.1 的 arrivalOnly 改回来）：
    到达时它会出现在地点按钮行 / 选项行里，由玩家主动点击 → 才弹窗（见 main.js 的 exchangeAtNode）。
@@ -209,6 +255,13 @@ const EXCHANGE_BY_NODE = {
   beach: 'x_s2e',
   observationdeck: 'x_e2i',
   dockgate: 'x_power',        /* 补：码头关（东海岸第 3 个时间 ↔ 资源） */
+
+  /* ---- 荒野：v1.9.0b3 改动 6 新分 ----
+     5 个无物品地点（小树林 / 森林 / 森林深处 / 沼泽 / 沼泽深处）→ 2 时间 + 1 资源 + 2 无交互。
+     两处「深处」是禁区门槛，刻意留空（无交互 → 到达时输出「这里什么都没有」）。 */
+  xiaoshulin: 'x_scav',       /* 小树林：时间 ↔ 资源（翻找 → 刷物资） */
+  senlin: 'x_nap',            /* 森林：时间 ↔ 资源（靠着树睡一会儿 → 回体力） */
+  zhaoze: 'x_s2e',            /* 沼泽：资源 ↔ 资源（体力 -1 → 电量 +8） */
 };
 
 /* 把交换挂成地点的选项：放在区域表之前，保证 NODES 建好就能用。
@@ -324,18 +377,38 @@ export const REGIONS = {
     unlocked: true,                     /* 开局区域：家在这里 */
   },
 
-  /* ================= 以下 5 个是占位（b2 / b3 / b4 落地） ================= */
+  /* ================= 以下 3 个是占位（b4 落地） ================= */
 
   wilderness: {
     id: 'wilderness',
     name: '荒野',
     type: 'region',
-    placeholder: true,
-    nodes: ['northgate'],               /* 只有接口节点，内部节点等 b3 */
-    edges: [],
-    mainRoads: [],
+    /* v1.9.0b3 落地：northgate 一个共享接口 + 7 个内部节点 = 8 */
+    nodes: ['northgate',
+      'yizhan', 'xiaoshulin', 'senlin', 'senlinshenchu', 'jinqu', 'zhaoze', 'zhaozeshenchu'],
+    /* 需求给的 8 条边，逐条落地（没有增删）：
+         北关 → 驿站 → 小树林 → 森林 → 森林深处 → 禁区
+                              ↘ 沼泽 → 沼泽深处
+         森林深处 ↔ 沼泽深处 是一条横穿的连线（把两条链收成一个环）。
+       mainRoads 只标两条主链（北关→驿站→小树林→森林→森林深处、小树林→沼泽→沼泽深处）；
+       另外两条（森林深处→禁区、森林深处↔沼泽深处）算支路，走它们要多花 1.4 倍时间。 */
+    edges: [
+      { from: 'northgate', to: 'yizhan' },
+      { from: 'yizhan', to: 'xiaoshulin' },
+      { from: 'xiaoshulin', to: 'senlin' },
+      { from: 'senlin', to: 'senlinshenchu' },
+      { from: 'senlinshenchu', to: 'jinqu' },
+      { from: 'xiaoshulin', to: 'zhaoze' },
+      { from: 'senlinshenchu', to: 'zhaozeshenchu' },
+      { from: 'zhaoze', to: 'zhaozeshenchu' },
+    ],
+    mainRoads: [
+      ['northgate', 'yizhan'], ['yizhan', 'xiaoshulin'], ['xiaoshulin', 'senlin'],
+      ['senlin', 'senlinshenchu'],
+      ['xiaoshulin', 'zhaoze'], ['zhaoze', 'zhaozeshenchu'],
+    ],
     neighbors: ['wasteland'],
-    primaryShelter: null,
+    primaryShelter: 'yizhan',           /* 驿站：安全屋（过夜 + 储物箱 + 值班日志） */
     unlocked: false,
   },
 
@@ -815,7 +888,13 @@ const REGION_VIEW_POS = {
        coast    的 eastgate （逻辑坐标是废城东端 930,300）→ 挪到东海岸西端
      另外 powerplant / dockgate 的逻辑坐标分别是「工业区南端 / 东海岸东端」，
      到了占位区域（孤岛 / 码头）那一侧也要反过来贴边 —— 虽然 b4 之前进不去，
-     但区域视图一旦被渲染（比如 debug 直接切视图），位置也必须是对的。 */
+     但区域视图一旦被渲染（比如 debug 直接切视图），位置也必须是对的。
+   v1.9.0b3：荒野在废城【北面】，所以共享节点 northgate 在荒野这一侧要贴【南】边
+      （逻辑坐标 850,50 是它在废城那一侧的北缘，两个区域看到的必须是同一段文案、
+       但方位要各自朝对面）。 */
+  wilderness: {
+    northgate: { x: 500, y: 540 },
+  },
   industry: {
     southgate: { x: 500, y: 60 },
   },
@@ -1360,8 +1439,11 @@ function renderArea(regionId) {
   /* 五种状态；null = 不渲染
      darkblock（v1.8.8 新增）：没电时的黑暗地点 —— 看得见、不能去。
      它拿 is-blocked 的既有样式（灰 + 虚线 + 降透明），未访问时再叠 is-unseen 保留菱形，
-     所以既不显示名字（不泄露没走过的地图），又明显区别于可点的琥珀菱形。 */
+     所以既不显示名字（不泄露没走过的地图），又明显区别于可点的琥珀菱形。
+     v1.9.0b3 改动 3：还带一个解锁门槛 —— 未解锁的节点（禁区）完全不渲染、不可点，
+     解锁条件满足后自动回到下面这套常规判定（当前节点自己例外，免得人站在上面却看不见自己）。 */
   const stateOf = (id) => {
+    if (id !== here && !isNodeUnlocked(id)) return null;   /* 未解锁：连形态都不给（机制 A 之外的门槛） */
     if (!inSight(id)) return null;                      /* 没电被隐藏：不可点，也没有悬浮提示 */
     if (here && id === here) return 'current';          /* 当前位置：有标识，不参与可点性判断 */
     if (isNodeBlockedByDarkness(id)) return 'darkblock';

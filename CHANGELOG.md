@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b2.4` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b3` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `4` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -34,6 +34,96 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.9.0b3] — 2026-10-11 —— 落地荒野（8 节点 + 6 个黑暗地点）+ 禁区解锁 + 驿站文本 + 金钥匙
+
+**回档点 / git 标签**：`v1.9.0b3`
+
+> 存档结构版本号**不变（仍是 v4）**、**没有新增字段**：禁区的解锁状态**完全由
+> `visitedByArea` 推导**（森林深处 + 沼泽深处都到过），visited 只增不减，所以解锁天然永久、
+> 读档后自动恢复。这是 b 块（地图重做）的第 3 块，共 4 块；本块**只落地数据**，
+> 没有改动任何机制代码（黑暗流逝 / 移动耗时 / 存档格式一律没碰）。
+
+### 新增
+
+- **改动 1：荒野区域落地**（`v6/js/map.js`、`v6/js/texts.js`）
+  - 8 个节点：共享接口 `northgate`（北关，与废城共用同一份文案）+ 7 个内部节点
+    `yizhan` 驿站 / `xiaoshulin` 小树林 / `senlin` 森林 / `senlinshenchu` 森林深处 /
+    `jinqu` 禁区 / `zhaoze` 沼泽 / `zhaozeshenchu` 沼泽深处。
+  - 8 条边逐条按需求落地（`northgate→yizhan→xiaoshulin→senlin→senlinshenchu→jinqu`、
+    `xiaoshulin→zhaoze→zhaozeshenchu`、`senlinshenchu↔zhaozeshenchu`），一条不多一条不少；
+    前两条主链进 `mainRoads`，`forest深处→禁区` 与 `森林深处↔沼泽深处` 算支路（耗时 ×1.4）。
+  - `primaryShelter = yizhan`：驿站成为安全屋（过夜 + 储物箱），沿用「共享节点 ∪ 各区域
+    primaryShelter」的既有判定，安全屋总数 7 → 8。
+  - `wilderness` 的 `placeholder` 标记去掉（`isAreaImplemented` 变 true），
+    `REGION_VIEW_POS` 给荒野加了一条 `northgate` 的视觉覆盖：荒野在废城【北面】，
+    所以北关在荒野这一侧贴【南】边（与 industry/coast/island/dock 四处同一套处理）。
+  - 文本：`texts.js` 的 `SCENES` 补 7 段（节点总数 48 → 55，SCENES 同步 55）。
+- **改动 2：荒野 6 个节点标记为黑暗**（`v6/js/map.js`）
+  - `isDark = true`：`xiaoshulin` / `senlin` / `senlinshenchu` / `jinqu` / `zhaoze` / `zhaozeshenchu`；
+    驿站 `yizhan` 与接口 `northgate` 不黑暗。这是黑暗机制的**第一批启用点**。
+  - 机制代码零改动：`batteryDrainPerHour()` / `drainBatteryForGameSeconds()` / `tick()` /
+    `advanceTime()` 一行没碰，`config.js` 的 2% 与 1% 也没动 —— 实测黑暗地点仍是 **3%/游戏小时**、
+    普通地点 2%；「没电进不去黑暗地点」与「黑暗里掉到 0 断电回家（不扣体力上限）」照旧复用。
+  - 文本用词：全局搜「手电筒 / 火把」——项目里这两个物品早就删了，所以把还提它们的措辞改掉：
+    `x_e2s` 的按钮 `把手电开到最亮` → `把照明开到最亮`；随机事件 `flicker` 的叙事
+    `手电被闪得忽明忽暗` → `手机的光被闪得忽明忽暗`；`modal.js` 用法示例里的 `手电筒` → `罐头`。
+    **例外**：改动 4 那段用户钦定的值班日志正文里的「手电」原样保留（一字不改）。
+- **改动 3：禁区解锁机制**（`v6/js/map.js`、`v6/js/main.js`）
+  - `map.js` 新增 `LOCKED_NODES = { jinqu: ['senlinshenchu','zhaozeshenchu'] }` 与
+    `isNodeUnlocked(nodeId)` / `lockedNodeIds()`；`renderArea()` 的 `stateOf()` 第一行加门槛：
+    未解锁的节点**完全不渲染**（连菱形都没有），解锁后自动回到机制 A（相邻当前节点 → 菱形，
+    不相邻 → 仍不渲染）。当前节点自己例外，免得 debug 传送过去后地图上没有自己那一格。
+  - `main.js` 的 `visitNode()` 比较「标记前后还锁着哪些节点」，发现新解锁就置 `gateNoticePending`；
+    `arriveAt()` 在到达文案之后输出 `UI.gateOpened = '林子里似乎出现了一条小路。'`
+    （不能在 visitNode 里直接打：`arriveAt` 开头的 `clearQueue()` 会把它清掉）。
+  - 解锁永久保持（visited 只增不减）；**不新增存档字段**，读档后按 visited 自动恢复。
+- **改动 4：驿站储物箱的文本物品「值班日志」**（`v6/js/texts.js`、`v6/js/main.js`）
+  - `DOCUMENTS` 从两份变三份，并给每份补一个 `shelter` 字段决定它挂在哪个安全屋：
+    日记 / README → `home`；`shiftlog` 值班日志 → `yizhan`。
+    `main.js` 的 `renderInventory()` 改成按 `doc.shelter === shelterKey` 过滤（原来是
+    `shelterKey === HOME_ID` 才渲染两份）。
+  - 名称「值班日志」、描述「一张皱巴巴的值班日志。」、正文两段按需求**一字不改**
+    （第二段保留开头的省略号）；仍然不可拾取 / 不占容量 / 不消耗时间 / 可反复读。
+- **改动 5：金钥匙**（`v6/js/texts.js`、`v6/js/map.js`）
+  - `ITEMS.goldenkey`：名称「金钥匙」、无 `slot`（穿不上）、不提供口袋格；物品表 7 → 8 件。
+  - 放置点 = 荒野禁区 `jinqu` 的 `items`（b4 码头金锁开门用，本块只落地物品与放置点）。
+    于是「荒野有物品的地点」= 1 个（只有禁区），符合 b2 的口径。
+- **改动 6：荒野资源交换分配**（`v6/js/map.js`）
+  - 荒野无物品地点 = 5 个（不含禁区、驿站、北关）→ 按 b2 规则 2/5、1/5、2/5：
+    **小树林 `x_scav`、森林 `x_nap`（时间 ↔ 资源 ×2）；沼泽 `x_s2e`（资源 ↔ 资源 ×1）；
+    森林深处 / 沼泽深处 无交互 ×2**（两处「深处」是禁区门槛，刻意留空 → 到达时输出
+    「这里什么都没有」）。用的都是既有 `EXCHANGES` 条目，没有新增文案；交换点总数 25 → 28。
+
+### 变更
+
+- `v6/js/config.js`：`GAME_VERSION = 'v1.9.0b3'`。
+
+### 验证
+
+- 新增临时校验脚本 `.tools/nw_b3_check.mjs`（6 个改动 + a/b1/b1.1/b2~b2.4 回归，全部通过），
+  其中专门回归了三条「机制不许被碰」的约束：黑暗速率仍是 3%/h（离散与 tick 两条路各测一次）、
+  没电仍进不去黑暗地点（走真正的 `travelTo`，不是 debug 传送）、黑暗归零仍断电回家且不扣体力上限；
+  以及「存档字段表仍是那 18 个键」「解锁完全由 visited 推导」。
+- 同步更新了老套件里因本块而变动的数字：节点 48 → 55、物品 7 → 8、安全屋 7 → 8、
+  交换点 25 → 28、空地点 12 → 14、`isAreaImplemented('wilderness')` false → true、
+  b1 里「试图进入未实现区域」的对照从荒野改到码头。
+- 走过的全量套件（全部通过）：`nw_b3_check` / `nw_b24_check` / `nw_b23_check` / `nw_b22_check` /
+  `nw_b21b_check` / `nw_b2_check` / `nw_b11_check` / `nw_b1_check` / `nw_r13_check` / `nw_r14_check` /
+  `nw_boot_check` / `nw_ver_check`。
+
+### 已知限制 / 遗留
+
+- **「值班记录」还是「值班日志」**：本轮需求的目标一栏写的是「值班记录」，改动 4 的细则写的是
+  物品名「值班日志」（正文也自称值班日志）——按细则落地为 **值班日志**。
+- **debug 传送可以绕过禁区门槛**：门槛只作用在渲染层（不渲染 → 点不到），`/goto` 这类调试指令
+  仍能直接把玩家送进去。这是调试入口的既有性质，没有为它加特例。
+- 两处「深处」没有交换、也没有物品，到达时只说「这里什么都没有」；如果想给它们内容，
+  等 c 块的物品/使用系统。
+- 黑暗节点目前只有荒野这 6 个；b4 的码头/孤岛若也有黑暗地点，直接在 `defNode` 上补 `isDark` 即可。
+- 金钥匙与渡口钥匙都只是「带着的道具」，开门判定等 b4。
 
 ---
 

@@ -15,6 +15,7 @@ import {
   isSharedNode, primaryShelterOf, getVisitedIn, isAreaImplemented,
   reachableVisited, hasDirectEdge, calcMoveDuration, clearMoveDurationCache, REGIONS, HOME_ID,
   isDarkNode, isNodeBlockedByDarkness, findNearestReachableShelter,
+  lockedNodeIds,
 } from './map.js';
 import * as terminal from './terminal.js';
 import * as modal from './modal.js';
@@ -54,6 +55,7 @@ let nightEnded = false;      /* 本轮移动/选项期间是否刚好天亮了 *
 let batteryCollapsed = false;/* 本轮移动/选项期间是否触发了「黑暗地点断电回家」 */
 let sceneEl = null;
 let pendingMove = null;      /* 本次移动的 { fromId, toId, cost }，供 arriveAt 打印移动横幅 */
+let gateNoticePending = false;  /* v1.9.0b3：这一次到访刚把某个「解锁门槛」打开了 → 到达时补一句话 */
 
 /** 当前所在安全屋的储物键（节点 id 全局唯一，直接用 id）；不在安全屋时返回 null */
 function currentShelterKey() {
@@ -64,11 +66,27 @@ function currentShelterKey() {
 /**
  * 到达某节点：切换区域与节点，并把【共享节点】在每个所属区域里都标记为已访问。
  * 「哪些区域含这个节点」是 map.js 的知识，所以这条规则放在 main.js（唯一协调者）里。
+ *
+ * v1.9.0b3 改动 3：顺便比较「标记前后还有哪些节点没解锁」——
+ * 解锁条件完全由 visited 推导（map.js 的 LOCKED_NODES / isNodeUnlocked），
+ * 所以只要这一趟把门槛满足了（森林深处 + 沼泽深处都到过），这里就能发现。
+ * 提示语不能直接在这里打：arriveAt 开头的 terminal.clearQueue() 会把排队的日志一起清掉，
+ * 所以只置一个标记，由 arriveAt 在到达文案之后输出。
  */
 function visitNode(areaId, nodeId) {
+  const lockedBefore = new Set(lockedNodeIds());
+
   game.setCurrentArea(areaId);
   game.setCurrentNode(nodeId);
   for (const area of areasOfNode(nodeId)) game.markVisited(area, nodeId);
+
+  /* 有节点从「未解锁」变成「已解锁」= 这一趟刚好满足了门槛。
+     比较的是「标记前锁着的 - 标记后还锁着的」，不能反过来拿标记后的列表去 some()。 */
+  if (lockedBefore.size > 0) {
+    const lockedAfter = new Set(lockedNodeIds());
+    if ([...lockedBefore].some((id) => !lockedAfter.has(id))) gateNoticePending = true;
+  }
+
   /* v1.9.0b2.2：资源交换改回「点选项 → 弹窗」，所以「本次停留已弹过」的守卫只剩安全屋在用。 */
   promptedShelter.clear();
 }
@@ -350,14 +368,15 @@ function renderInventory() {
 
     /* 家特有的两份文档（日记 / README）：跟在真物品后面列在同一个储物箱里。
        它们不是物品 —— 不在 storage 数组里，所以不占容量、计数也不含它们、
-       点一下只是读（见 readDocument），既不消耗时间也不会被拿进背包。 */
-    if (shelterKey === HOME_ID) {
-      for (const doc of DOCUMENTS) {
-        storageRows.push(itemButton(doc.name, {
-          onClick: () => readDocument(doc),
-          hint: doc.desc,
-        }));
-      }
+       点一下只是读（见 readDocument），既不消耗时间也不会被拿进背包。
+       v1.9.0b3 改动 4：文档改成按【归属安全屋】过滤（DOCUMENTS[].shelter）——
+       日记 / README 归家，值班日志归荒野驿站，所以驿站也有自己的一份可读文本。 */
+    for (const doc of DOCUMENTS) {
+      if (doc.shelter && doc.shelter !== shelterKey) continue;
+      storageRows.push(itemButton(doc.name, {
+        onClick: () => readDocument(doc),
+        hint: doc.desc,
+      }));
     }
 
     el.appendChild(section(
@@ -999,6 +1018,12 @@ async function arriveAt(node) {
   }
   terminal.log('');                                  /* 到达后空行 */
   terminal.log(node.desc);                           /* 2 */
+  /* 2.5 【改动 3】这一趟刚好把「禁区」的门槛满足了 → 补一句解锁提示。
+         标记由 visitNode() 置上（那时刚标记完已访问），这里输出才不会被 clearQueue 清掉。 */
+  if (gateNoticePending) {
+    gateNoticePending = false;
+    terminal.log(UI.gateOpened);
+  }
   /* 3 【改动 2】默认追问「你要做什么？」只在【这里确实有事可做】时才打；
        什么都没有的地点改成只打「这里什么都没有。」（b2.2 那一步的输出位置也挪到这里，
        免得「你要做什么？」和「什么都没有」一前一后叠着出现）。

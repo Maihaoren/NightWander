@@ -9,7 +9,7 @@
  *   const r = await showModal({
  *     title: '发现物品',
  *     desc: '地上散着几样东西。',
- *     items:   [{ id: 'flashlight', text: '手电筒', hint: '占 1 格' }],
+ *     items:   [{ id: 'cannedfood', text: '罐头', hint: '占 1 格' }],
  *     actions: [{ text: '全部放弃', value: 'skipAll' }],
  *   });
  *   r = { type: 'item', id } | { type: 'action', value }
