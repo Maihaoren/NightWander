@@ -353,6 +353,15 @@ export function isNodeBlockedByDarkness(nodeId) {
   return isDarkNode(nodeId) && game.getBattery() <= 0;
 }
 
+/**
+ * 该区域是不是「黑暗区域」（大地图上要额外标识的区域）。
+ * 由节点推导而不是再加一个区域字段：一个区域只要含任何 isDark 节点就算，
+ * 将来某个区域有多个黑暗地点、或者黑暗地点挪走，标识都会自动跟着变。
+ */
+export function isDarkRegion(regionId) {
+  return getNodeIds(regionId).some((id) => isDarkNode(id));
+}
+
 export function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
@@ -730,13 +739,16 @@ function placeTip(el, event) {
 
 /**
  * 悬浮提示的内容。
- * 有电：两行 —— 预计耗时 / 到达时间
- * 没电：一行 —— 「没电了，预测不了时间。」（文案在 texts.js 的 UI.tipNoBattery）
+ * 没电 + 黑暗地点（进不去）：一行 —— 「因为没电了，进不去。」（UI.tipDarkBlocked）
+ * 没电 + 普通可点节点      ：一行 —— 「没电了，预测不了时间。」（UI.tipNoBattery）
+ * 有电                    ：两行 —— 预计耗时 / 到达时间
  *   没有当前节点、或目标就是当前节点、或路径算不出来（不可达）→ 返回 null（不显示提示）
  * 「当前所在」与「已访问但走不到」的节点不会绑悬浮事件；没电的黑暗地点是例外：
- * 它不可点，但会绑事件，为的是能解释一句为什么不能去（见 renderArea）。
+ * 它不可点，但会绑事件，为的就是能解释一句为什么不能去（见 renderArea）。
  */
 function buildTipLines(toId, regionId) {
+  /* 黑暗地点 + 没电 → 专门那句「进不去」，要排在通用那句之前 */
+  if (isNodeBlockedByDarkness(toId)) return [UI.tipDarkBlocked];
   if (game.getBattery() <= 0) return [UI.tipNoBattery];         /* 没电：连耗时也预测不了 */
 
   const from = currentNode;
@@ -889,6 +901,8 @@ function renderWorld() {
     if (seen) classes.push('is-visited');
     else classes.push('is-open', 'is-unseen');
     if (id === game.getCurrentArea()) classes.push('is-current');
+    /* 黑暗区域标识：区域里有 isDark 节点就叠一层（与区域地图上的节点标识同一套配色） */
+    if (isDarkRegion(id)) classes.push('is-dark');
 
     const group = svgNode('g', { class: classes.join(' '), 'data-area': id });
     const cx = box.x + box.w / 2;
@@ -904,6 +918,13 @@ function renderWorld() {
     const label = svgNode('text', { class: 'region-name', x: cx, y: cy + 8 });
     label.textContent = region.name;
     group.appendChild(label);
+
+    /* 黑暗区域的小标签：放在区域名下面一行；未解锁时区域名被 CSS 藏起来，这个标签照常显示 */
+    if (isDarkRegion(id)) {
+      const darkTag = svgNode('text', { class: 'dark-tag', x: cx, y: cy + 30 });
+      darkTag.textContent = UI.mapDarkTag;
+      group.appendChild(darkTag);
+    }
 
     layers.regions.appendChild(group);
     regionEls.push({ areaId: id, el: group });
@@ -994,6 +1015,9 @@ function renderArea(regionId) {
       if (visited.has(id)) classes.push('is-visited', 'is-blocked');
       else classes.push('is-unseen', 'is-blocked');
     } else classes.push('is-open', 'is-unseen');
+    /* 黑暗地点标识：独立于上面那几种状态再叠一层（底色 + 紫色描边 + 名字下方的小标签），
+       所以「已访问 / 未访问 / 当前 / 走不到 / 没电进不去」五种状态下都认得出来 */
+    if (node.isDark) classes.push('is-dark');
 
     const group = svgNode('g', { class: classes.join(' '), 'data-id': id });
     const p = drawPos(node, regionId);       /* 绘制坐标 = 该区域的视觉坐标 + 固定噪声 */
@@ -1019,6 +1043,19 @@ function renderArea(regionId) {
       });
       hereEl.textContent = UI.mapHere;
       group.appendChild(hereEl);
+    }
+
+    /* 黑暗地点的小标签：放在「你在这里」下面一行，避免两者叠在一起。
+       未访问时节点名被 CSS 藏起来，但这个标签照常显示 —— 它不泄露名字，只说明这里很黑。 */
+    if (node.isDark) {
+      const darkTag = svgNode('text', {
+        class: 'dark-tag',
+        x: p.x,
+        y: p.y + h / 2 + (st === 'current' ? 30 : 16),
+        style: `font-size:${hereSize}px`,
+      });
+      darkTag.textContent = UI.mapDarkTag;
+      group.appendChild(darkTag);
     }
 
     layers.nodes.appendChild(group);

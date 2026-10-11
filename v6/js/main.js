@@ -947,18 +947,14 @@ function onNightEnd() {
   nightEnded = true;
   if (game.isGameOver()) return;
 
-  const area = game.getCurrentArea();
+  /* 天亮：不在安全屋就先按区域送回去（onForceHome('night') 内部同样是「先传送再结算」）；
+     已经在安全屋就原地不动。两条分支都收在 settleNight() 上 —— 与「主动过夜」是同一套结算，
+     不再有「只加天数、不回电不回体力」的半套代码。 */
   if (!isShelter(game.getCurrentNode())) {
     onForceHome('night');
     return;
   }
-
-  /* 天亮时人在安全屋（正常流程不会走到）：天数 +1 并把当晚计时归零，否则时钟会卡在 06:00 */
-  game.setDay(game.getDay() + 1);
-  time.drainBatteryOnDayChange();          /* 跨天同样扣一笔（这里没有回电，所以一定会扣到） */
-  game.setElapsedSeconds(0);
-  time.startClock(onNightEnd);
-  renderStatusBar();
+  settleNight();
 }
 
 async function onForceHome(reason) {
@@ -967,14 +963,15 @@ async function onForceHome(reason) {
   terminal.clearQueue();                             /* 2 */
   terminal.log(reason === 'night' ? UI.nightHome : UI.collapse);   /* 3 */
 
-  /* 4 按区域送回该区域自己的 primaryShelter（并标记已访问），不扣体力/时间 */
+  /* 4 按区域送回该区域自己的 primaryShelter（并标记已访问），不扣体力/时间。
+       顺序很重要：先 visitNode，后面的结算读到的才是【传送后的节点】 */
   const area = game.getCurrentArea();
   const shelterId = primaryShelterOf(area);
   visitNode(area, shelterId);
   game.setStaminaMax(game.getStaminaMax() - FORCE_HOME_PENALTY);   /* 5 惩罚立即生效 */
 
   if (game.getStaminaMax() <= STAMINA_MIN) {         /* 6 走不动了：先结算，再 gameOver */
-    settleNight();                                   /* a) 天数 +1、时间归零、体力电量回满 */
+    settleNight();                                   /* a) 天数 +1、时间归零、体力回满（回电看当前节点是不是 home） */
     game.setGameOver(true);                          /* b) */
     terminal.log(UI.gameOverStamina);                /* c) "你已经精疲力尽，再也走不动了。游戏结束。" */
     time.stopClock();                                /* d) 停止时钟 */
@@ -983,7 +980,17 @@ async function onForceHome(reason) {
     return;                                          /* f) */
   }
 
-  /* 7 强制回家不再自动结算：送到安全屋后由玩家自己选「过夜」 */
+  /* 7 天亮：走与「主动过夜」完全相同的结算（settleNight）。
+        这里曾经是半套代码（只加天数、只归零计时），于是 06:00 被送回家后
+        体力与电量都不刷新，玩家还得再点一次「过夜」，天数又白加一天。
+        结算安排在 visitNode 之后，所以送回的节点是 home 时电量会回满。 */
+  if (reason === 'night') {
+    settleNight();
+    await arriveAt(getNode(game.getCurrentNode()));
+    return;
+  }
+
+  /* 8 体力归零强制回家不再自动结算：送到安全屋后由玩家自己选「过夜」 */
   await arriveAt(getNode(shelterId));
 }
 
@@ -1002,15 +1009,21 @@ function redrawShelterQuietly() {
 
 /**
  * 黑暗地点断电：身处黑暗地点（isDark 节点）时电量归零 ——
- *   送回 home + 天数 +1 + 时间归零 + 体力回满 + 电量回满，
- *   但**不扣体力上限**（这是与体力归零强制回家的唯一区别），所以不会因此 gameOver。
+ *   送回【当前区域的 primaryShelter】（darkarea → southpass，不是 home）+ 天数 +1 + 时间归零 + 体力回满，
+ *   **电量不回满**（目的地不是 home 节点，所以 settleNight 的回电条件不成立），
+ *   且**不扣体力上限**（这是与体力归零强制回家的唯一区别），所以不会因此 gameOver。
  *
  * 【与体力归零是两条独立路径】：
  *   体力：travelTo 里走完到达流程后判断 `getStamina() < 0` → 安全屋就地结算 / onForceHome('stamina')（扣上限）
- *   电量：本函数，判断 `getBattery() === 0 && 当前节点 isDark` → 传送 + 结算（不扣上限）
- *   两者判断的量、位置、后果都不同；本函数先跑，它一旦执行就把电量回满、体力回满，
+ *   电量：本函数，判断 `getBattery() === 0 && 当前节点 isDark` → 传送 + 结算（不扣上限、不回电）
+ *   两者判断的量、位置、后果都不同；本函数先跑，它一旦执行就把体力回满，
  *   所以同一时刻两者都成立时也不会互相拦截（电量断电先处理，之后体力一定是满的）。
  *   06:00 天亮那条也同样不会抢先：tick / advanceTime 里扣电通知都排在夜晚结束判断之前。
+ *
+ * 【顺序：先传送 → 后结算】不只是观感问题，也是必需的：
+ *   settleNight() 里会调 time.drainBatteryOnDayChange()，而它会再通知一次本函数（电量仍是 0）。
+ *   正因为已经把当前节点换成了非黑暗的安全屋，那次重入会立刻在 isDark 判断处返回 false，
+ *   否则就会递归下去。改这一段时必须保持「先 visitNode、后 settleNight」。
  *
  * 全程同步：tick 里的电量流逝是定时器回调，等不了 await；而用到的
  * visitNode / settleNight / redrawShelterQuietly 本来就都是同步的。
@@ -1036,11 +1049,17 @@ function onBatteryCollapse() {
   terminal.clearQueue();
   terminal.log(UI.darkCollapse);
 
-  /* 1 传送回 home：区域也要跟着换（home 是 home 区域唯一的节点） */
-  visitNode(HOME_ID, HOME_ID);
+  /* 1 传送回【当前区域】的安全屋：与体力归零 / 天亮强制回家同一条规则（primaryShelterOf）。
+       黑暗地点只在 darkarea 里，所以这里就是 southpass —— 不再写死 home。
+       区域也要跟着换：primaryShelter 一定是本区域的节点（这是数据层的不变式）。 */
+  const area = game.getCurrentArea();
+  const shelterId = primaryShelterOf(area);
+  visitNode(area, shelterId);
 
-  /* 2 结算：天数 +1、时间归零、体力回满、电量回满（当前节点是 home，回电条件成立）。
-       注意这里【没有】setStaminaMax(...)，体力上限一分不扣。 */
+  /* 2 结算：天数 +1、时间归零、体力回满。
+       电量【不回满】：settleNight 的回电条件是「当前节点是 home」，而这里是 southpass。
+       注意这里【没有】setStaminaMax(...)，体力上限一分不扣。
+       结算读的就是上面 visitNode 换过之后的当前节点。 */
   settleNight();
 
   /* 3 再判断 gameOver（沿用原顺序）。体力上限没被扣，所以只有本来就已经触底才可能成立 */
@@ -1049,32 +1068,35 @@ function onBatteryCollapse() {
     terminal.log(UI.gameOverStamina);
     time.stopClock();
     terminal.setLocked(true);
-    redrawShelterQuietly();                          /* 人已经在家里，静默重绘（同体力强制回家那一支） */
+    redrawShelterQuietly();                          /* 人已经在安全屋，静默重绘（同体力强制回家那一支） */
     batteryCollapsed = true;
     return true;
   }
 
-  /* 4 正常情况与体力强制回家保持一致：照常走一次到达流程，让玩家在终端里看到自己回到了家。
+  /* 4 正常情况与体力强制回家保持一致：照常走一次到达流程，让玩家在终端里看到自己到了安全屋。
        这里刻意不 await —— 本函数是从定时器回调或 travelTo 里【同步】调用的，
        到达流程的后续重绘彼此独立（与 debugContext.goto 的用法相同）。 */
-  arriveAt(getNode(HOME_ID));
+  arriveAt(getNode(game.getCurrentNode()));
   batteryCollapsed = true;
   return true;
 }
 
 /**
- * 结算流程：主动回家与强制回家共用。
+ * 结算流程：主动过夜 / 06:00 天亮 / 黑暗断电 / 体力归零 共用。
  * 这是修改 state.day 的唯一游戏逻辑位置（main.js / settleNight）。
+ * 不论从哪条路径进来，回电条件都只看【结算时的当前节点是不是 home】，
+ * 所以「先传送 → 后结算」定下来之后，各条路径的回电行为自然一致。
  */
 function settleNight() {
   game.setDay(game.getDay() + 1);        /* 1 */
   /* 1.5 跨天一次性扣电：必须在「回家回电」之前，
-         这样在家过夜（含黑暗断电被送回 home）才是满电开局，在灯塔/南关口过夜才会真扣掉这 5% */
+         这样在家过夜才是满电开局，在灯塔 / 北关口 / 南关口过夜才会真扣掉这 5% */
   time.drainBatteryOnDayChange();
   game.setElapsedSeconds(0);             /* 2 */
   game.setStamina(game.getStaminaMax()); /* 3 */
   /* 4 只有【家节点】回电：灯塔 / 北关口 / 南关口这些安全屋过夜不回电。
-       按节点判断，所以在 area1 / newarea1 里走到 home 也算在家。 */
+       按节点判断，所以在 area1 / newarea1 里走到 home 也算在家。
+       黑暗断电送回的是 darkarea 的 southpass，所以那条路径不回电。 */
   if (game.getCurrentNode() === RECHARGE_NODE) game.setBattery(BATTERY_MAX);
   game.clearPerDayOptions();             /* 5 清空 perDay 已用项 */
   time.resetClock();                     /* 时间回到 20:00:00 */

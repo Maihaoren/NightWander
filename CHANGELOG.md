@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.8.9` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.8.10` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `3` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -34,6 +34,98 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.8.10] — 2026-10-11 —— 黑暗归零改回本区域安全屋（不回电）+ 06:00 天亮复用过夜结算 + 黑暗标识与「进不去」文案
+
+**回档点**：`v1.8.10`
+
+### 修复
+
+**1. 黑暗归零改成送回【本区域的 primaryShelter】，且电量不回满（`main.js`）**
+
+- 症状：在 `dark_core` 里电量归零，人被送回 `home` 区域的 `home` 节点、而且电量回满 —— 与「黑影地带的安全屋是南关口」的设定不符。
+- 根因：`main.js` 的 `onBatteryCollapse()` 里写死了 `visitNode(HOME_ID, HOME_ID)`（v1.8.8 那版的规格就是「回 home」，本轮改成按区域）。
+  因为 `visitNode` 之后当前节点确实变成了 `home`，`settleNight()` 的回电条件「当前节点是 home」成立，于是电量顺带回满。
+- 修复：改成与体力归零 / 天亮强制回家同一条规则 —— `primaryShelterOf(game.getCurrentArea())`：
+
+  ```js
+  const area = game.getCurrentArea();
+  const shelterId = primaryShelterOf(area);      /* darkarea → southpass */
+  visitNode(area, shelterId);                    /* 1 先传送 */
+  settleNight();                                 /* 2 后结算 */
+  ```
+
+  传送目标是 `southpass`（不是 `home`），所以 `settleNight()` 的回电条件不成立 —— **电量不回满**是这条规则的自然结果，不需要额外写一个「不要回电」的特例。
+  天数 +1 / 时间归零 / 体力回满 / **不扣体力上限** / 先生成后 gameOver 的顺序都没变。
+- `darkarea.primaryShelter = 'southpass'` 这个字段 **v1.8.8 就已经存在**，本轮核对后确认无需改动（请求里的第 1 项已是现状）。
+- 顺带被这条顺序救了一次：`settleNight()` 里会调 `time.drainBatteryOnDayChange()`，它会再通知一次 `onBatteryCollapse()`（电量仍是 0）。
+  正因为「先传送」已经把当前节点换成非黑暗的 `southpass`，那次重入会在 `isDark` 判断处立刻返回 `false`，不会递归、也不会多结算一天。
+  这条依赖已经写进源码注释，改这段时必须保持「先 visitNode、后 settleNight」。
+
+**2. 06:00 天亮的结算复用「主动过夜」，电量按当前节点回（`main.js`）**
+
+- 症状：06:00 被强制送回 `home` 之后，电量没有回满。
+- 根因（与请求里的三条猜测有关，但真因是第 3 条）：`onNightEnd()` 有**两套半成品**，都不是 `settleNight()`：
+  - 不在安全屋时 → `onForceHome('night')`，而这个函数当时**完全不结算**（只传送 + 扣体力上限 + 打印到达），
+    注释写着「强制回家不再自动结算：送到安全屋后由玩家自己选『过夜』」—— 那是 v1.8.5 为**体力**强制回家定的规则，被天亮那条路径一并继承了；
+  - 已经在安全屋时 → 另外一小段「只 `setDay(+1)` + 扣跨天电 + 时间归零」，**既不回体力也不回电**。
+  - 至于「`regionId === 'home'` 没跟着改」—— 这条不成立：v1.8.8 已经把回电判断改成了 `currentNode === RECHARGE_NODE`，本轮核对仍在。
+- 修复：
+  - `onNightEnd()` 两条分支**都收在 `settleNight()`** 上（人在安全屋就原地结算，不在就先 `onForceHome('night')`），那段半成品代码删除；
+  - `onForceHome('night')` 在传送 + 惩罚 + gameOver 判断之后，对 `reason === 'night'` 调用 `settleNight()` 再 `arriveAt(传送后的节点)`；
+  - 顺序统一为**先传送 → 后结算**：`settleNight()` 读的就是传送之后的当前节点，所以送回 `home` 时电量回满、送回灯塔/南关口时不回电，规则只有一条。
+- 体力归零那条路径**刻意不动**：仍然是「送到安全屋 + 扣体力上限 + 不自动结算，由玩家自己点过夜」（请求里也要求只改天亮这条）。
+  天亮那条仍然照旧扣 1 点体力上限（沿用原行为，未改）。
+
+**3. 黑暗地点/区域的视觉标识 + 没电进不去的悬浮文案（`map.js` + `texts.js` + `style.css`）**
+
+- 症状：`dark_core` 与普通节点在图上分不出来；没电时悬浮它显示的是「没电了，预测不了时间。」，与真正的原因（进不去）不符。
+- 修复：
+  - 节点组新增 `is-dark` 类（`renderArea` 里 `if (node.isDark) classes.push('is-dark');`），与「已访问 / 未访问 / 当前 / 走不到 / 没电进不去」五种状态**叠加**而不是互斥；
+    再在节点名下方加一个小标签 `[黑暗]`（`dark-tag` 元素，文案来自 `UI.mapDarkTag`）。未访问时节点名被 CSS 藏起来，但标签照常显示 —— 它不泄露名字，只说明这里很黑。
+  - 大地图：新增导出 `isDarkRegion(regionId)`（= 该区域含任何 `isDark` 节点，由节点推导而不是再加区域字段），`renderWorld()` 给区域块叠 `is-dark` 并加同一个 `[黑暗]` 标签。
+  - 配色走主题变量：`:root` 与 `html[data-theme="dark"]` 各一套 `--dark-node-fill / --dark-node-hover / --dark-node-stroke / --dark-node-text / --dark-node-diamond / --dark-region-fill / --dark-tag`。
+    浅色主题是深底白字 + 紫描边，深色主题把描边与标签提亮（仍是紫系）。
+  - CSS 里这组规则写在所有节点状态规则**之后**（同权重时后写的赢），并额外给 `.is-dark.is-current`（保留加粗描边）与 `.is-dark.is-open:hover`（hover 不换回普通灰底）各补了一条，避免原有状态提示被吃掉。
+  - 悬浮文案：`buildTipLines()` 先判 `isNodeBlockedByDarkness(toId)` → 返回 `UI.tipDarkBlocked`（「因为没电了，进不去。」）；
+    再判电量 0 → `UI.tipNoBattery`（「没电了，预测不了时间。」）；有电时照旧两行耗时 + 到达时间。
+
+### 变更
+
+| 文件 | 改动 |
+|---|---|
+| `v6/js/main.js` | `onNightEnd()` 两条分支都收在 `settleNight()`（删掉那段「只加天数」的半成品）；`onForceHome()` 的 `night` 分支改为「传送 → `settleNight()` → `arriveAt(传送后的节点)`」；`onBatteryCollapse()` 的传送目标 `visitNode(HOME_ID, HOME_ID)` → `visitNode(area, primaryShelterOf(area))`，`arriveAt` 同步改成传送后的节点；`settleNight()` 补注释 |
+| `v6/js/map.js` | 新增导出 `isDarkRegion()`；`renderArea()` 给 isDark 节点加 `is-dark` 类与 `[黑暗]` 标签；`renderWorld()` 给黑暗区域块加 `is-dark` 类与 `[黑暗]` 标签；`buildTipLines()` 增加 `tipDarkBlocked` 分支（排在通用那句之前） |
+| `v6/js/texts.js` | 新增 `UI.tipDarkBlocked`（「因为没电了，进不去。」）、`UI.mapDarkTag`（`[黑暗]`） |
+| `v6/style.css` | 两套主题各加 7 个 `--dark-*` 变量；新增 `.node.is-dark` / `.is-dark.is-current` / `.is-dark.is-open:hover` / `.region.is-dark` / `.dark-tag` 规则 |
+| `v6/js/config.js` | `GAME_VERSION` → `v1.8.10` |
+| `HANDOFF.md` | 游戏版本同步 `v1.8.10` |
+
+**未改动（已核对）**：`v6/js/map.js` 里 `darkarea.primaryShelter = 'southpass'` 已存在；`v6/js/timeSystem.js` 本轮不需要改
+（它只提供流逝扣电与 `drainBatteryOnDayChange()`，结算与回电判断都在 `main.js` 的 `settleNight()`）；
+`v6/js/state.js` / `v6/js/saveSystem.js` 也不需要改。
+
+**存档格式**：`VERSION` 仍为 **`3`**，**未变**，旧存档照常加载。
+
+### 验证
+
+- 模块链接检查、DOM 桩 `boot()`、11 个 js 文件 `node --check`、`style.css` 花括号 123/123 配平，全部通过。
+- 62 项断言全部通过（`.tools/nw_r11_check.mjs`，DOM 桩里真跑 `boot()` / 真点按钮 / 真跑 `tick`，用可控 `Date.now` 推进游戏时间）：
+  - **黑暗归零**：送回的节点与区域是 `darkarea` / `southpass`（**不再是 home**）、天数 +1、时间归零、体力回满、**电量保持 0**、`staminaMax` 不变、天数只加一次（证明结算里那次跨天通知没有递归触发第二次断电）、到达文案落在南关口；「电量本来就是 0」的调试指令场景结果一致。
+  - **06:00**：人在荒原野外 → 送回 `area1` 的 `home` → **电量回满**（本次修复的症状）、体力回满、天数 +1、时间 0；人在 `lighthouse` → 原地结算、**体力回满（旧的半成品不会回体力）**、天数 +1、非 home 安全屋不返电（只扣跨天 5%）；主动过夜与天亮结算在同一地点逐项结果一致（天数 +1 / 时间 0 / 体力满 / 电量 100）；代码层面核对「`visitNode` 在 `settleNight()` 之前」「`night` 分支调用 `settleNight()` 并打印到达」「体力那条仍不自动结算」「回电判断仍是 `currentNode === RECHARGE_NODE`」。
+  - **黑暗标识**：未访问（菱形）、已访问 + 当前、没电进不去三种状态下 `dark_core` 都带 `is-dark`，`is-current` / `is-blocked` 等原有状态类一个没丢；`[黑暗]` 标签在节点与区域块上都存在，当前节点上让开「你在这里」；普通节点/区域既没有 `is-dark` 也没有标签；大地图 `darkarea` 区域块带 `is-dark`；7 个 `--dark-*` 变量在两套主题里都有定义，黑暗规则在源码里排在状态规则之后。
+  - **悬浮文案**：没电悬停 `dark_core` → 「因为没电了，进不去。」；没电悬停普通节点（`n5`）→ 仍是「没电了，预测不了时间。」；有电悬停 `dark_core` → 正常两行耗时 / 到达时间。
+- 旧套件回归：v1.8.6 ~ v1.8.9 的断言与端到端全部通过。其中若干条断言**故意改写**以对齐本轮的新设定（原先是「回 home + 电量回满」与「没电悬浮 dark_core 用通用那句」），都加了注释说明改动原因。
+
+### 已知限制 / 遗留
+
+- **黑暗断电后电量停在 0，而南关口不是 home 节点、过夜也不回电**：玩家必须自己走回 `home` 才能补电（没电时视野收缩成「当前节点 + 直接相邻」，仍能一步步走回去）。
+  这是请求里「电量不回满」的直接后果，本轮照做未加兜底 —— 如果希望「至少给一点电」或「南关口也能补电」，说一声即可。
+- **天亮强制回家仍然扣 1 点体力上限**（`FORCE_HOME_PENALTY`，沿用原行为）。请求只提到电量，所以没动；若希望天亮不扣（因为结算已经复用了过夜），需要单独确认。
+- 黑暗标识用的是**紫系 + 深底 + `[黑暗]` 标签**三件套；`[黑暗]` 是普通 SVG 文字，不依赖特殊字体（项目里其它文案也都是普通中文字）。
+- 预先存在、本轮**未处理**：`m1`（枯树林）的 ASCII 图是 11 行，与项目「12 行」约定不符。
 
 ---
 

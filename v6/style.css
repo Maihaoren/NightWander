@@ -30,6 +30,16 @@
   --unvisited-node-border: #000000;
   --unvisited-node-fill: #ffffff;
 
+  /* 黑暗地点 / 黑暗区域（isDark）：底色压深 + 紫色描边，与「已访问 / 未访问 / 当前 / 走不到」
+     四种节点状态叠加时都还看得出来；浅色主题下用深底白字保证可读 */
+  --dark-node-fill: #1b1026;        /* 节点底色：比普通节点深得多 */
+  --dark-node-hover: #3a1f4d;       /* hover 时的底色（不换成普通 hover 灰，保住「这是黑暗地点」） */
+  --dark-node-stroke: #7b3ba3;      /* 描边：紫 */
+  --dark-node-text: #ffffff;        /* 节点名 */
+  --dark-node-diamond: #2c1440;     /* 未访问时的菱形填充 */
+  --dark-region-fill: #241031;      /* 大地图区域块底色 */
+  --dark-tag: #6d2f92;              /* [黑暗] 小标签 */
+
   --gap: 10px;
   --pad: 8px;
   --border-w: 2px;
@@ -66,6 +76,15 @@ html[data-theme="dark"] {
   --dashed-node-color: #cccccc;
   --unvisited-node-border: #ffffff;
   --unvisited-node-fill: #1a1a1a;
+
+  /* 黑暗地点 / 黑暗区域：深色主题下底色再深一点、描边与标签提亮，仍是紫系 */
+  --dark-node-fill: #2a1035;
+  --dark-node-hover: #4a2060;
+  --dark-node-stroke: #c07ae0;
+  --dark-node-text: #f7ecff;
+  --dark-node-diamond: #3a1247;
+  --dark-region-fill: #331340;
+  --dark-tag: #c07ae0;
   /* 故意不覆盖 --term-*：终端两种主题下保持一致 */
 }
 
@@ -273,6 +292,53 @@ body {
 }
 
 .map .node.is-unseen:hover .node-diamond { stroke-width: 3; }
+
+/* ---------- 黑暗地点 / 黑暗区域标识（isDark） ----------
+   放在所有节点状态规则【之后】：同权重时后写的赢，这样底色与描边才能盖住
+   「已访问实心块 / 未访问菱形 / 当前节点 / 走不到 / 没电进不去」那几种状态，
+   同时下面单独给 .is-current 与 hover 补规则，保证原有状态提示不被吃掉。 */
+
+/* 节点：底色压深 + 紫色描边（矩形态） */
+.map .node.is-dark .node-rect {
+  fill: var(--dark-node-fill);
+  stroke: var(--dark-node-stroke);
+  stroke-dasharray: none;
+}
+
+/* 节点：未访问时画的是菱形，同样换掉填充与描边 */
+.map .node.is-dark .node-diamond {
+  fill: var(--dark-node-diamond);
+  stroke: var(--dark-node-stroke);
+  stroke-width: 3;
+}
+
+.map .node.is-dark .node-name { fill: var(--dark-node-text); }
+
+/* 「当前所在」原本用反色粗描边标识；黑暗地点上换成紫色粗描边，两项提示都保住 */
+.map .node.is-dark.is-current .node-rect {
+  stroke: var(--dark-node-stroke);
+  stroke-width: calc(9px * var(--node-scale, 1));
+}
+
+/* hover 反馈不换回普通灰底，免得一悬浮就看不出这是黑暗地点 */
+.map .node.is-dark.is-open:hover .node-rect { fill: var(--dark-node-hover); }
+.map .node.is-dark.is-open:hover .node-diamond { fill: var(--dark-node-hover); }
+
+/* 大地图：黑暗区域块用同一套底色 + 紫色粗描边 */
+.map .region.is-dark .region-rect {
+  fill: var(--dark-region-fill);
+  stroke: var(--dark-node-stroke);
+}
+
+/* [黑暗] 小标签：节点与区域共用；未访问时它照常显示（不泄露名字，只说明这里很黑） */
+.map .dark-tag {
+  fill: var(--dark-tag);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  text-anchor: middle;
+  pointer-events: none;
+  letter-spacing: 1px;
+}
 
 /* ---------- 大地图（区域块 / 区域通道） ---------- */
 .map .region { cursor: pointer; }
