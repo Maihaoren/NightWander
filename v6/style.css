@@ -525,6 +525,44 @@ body {
 
 .map-back[hidden] { display: none; }
 
+/* ---------- 地图区的通用模态（js/modal.js） ---------- */
+.panel--map { position: relative; }
+
+.map-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--pad);
+  background: rgba(0, 0, 0, 0.55);   /* 半透明遮罩，只覆盖地图区 */
+}
+
+.map-modal__box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: auto;
+  padding: var(--pad);
+  border: var(--border-w) solid var(--term-fg);
+  background: var(--term-bg);
+  color: var(--term-fg);
+  font-family: var(--font-ui);
+  font-size: var(--fs-term);
+}
+
+.map-modal__title { font-weight: 700; }
+.map-modal__desc { color: var(--term-dim); line-height: 1.5; }
+
+.map-modal__list { display: flex; flex-direction: column; gap: 4px; }
+.map-modal__actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+
+.map-modal__item,
+.map-modal__action { width: 100%; text-align: left; }
+
 /* ---------- 弹窗 ---------- */
 #modal-root[hidden] { display: none; }
 
