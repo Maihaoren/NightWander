@@ -46,6 +46,20 @@ export const UI = {
   unknownCommand: '未知的命令',
   noOptionToRun: '当前没有可执行的选项',
   optionNoRequirement: '当前无法使用',
+
+  /* 拾取（整理物品式弹窗） */
+  pickupTitle: '发现物品',
+  pickupDesc: '地上散着几样东西。要拿哪一件？',
+  pickupTakeAll: '带走拿得下的',
+  pickupSkipAll: '全部放弃',
+
+  /* mustResolve 弹窗 */
+  mustResolveNothing: '这里似乎没什么可做的。',
+
+  /* 区域切换 */
+  cannotGoDirectly: '你无法直接前往那里，需要走陆路。',
+  notOnTheWay: '你不在通往那里的路上。',
+  areaSwitched: (name) => `你换到了${name}这一侧。`,
   lookTime: '查看时间',
 
   gotItem: (name) => `获得物品：${name}`,

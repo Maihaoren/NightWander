@@ -10,10 +10,12 @@ import {
 } from './config.js';
 import { UI, SCENES, ITEMS } from './texts.js';
 import {
-  initMap, refreshMap, setMapView, getNode, getNodes, getRegion, computeClickable, computeEdgeCost,
-  getCrossRegionTarget, isShelter, isAreaUnlocked, REGIONS, HOME_ID,
+  initMap, refreshMap, setMapView, getNode, getNodes, getRegion, getNodeIds, computeClickable,
+  computeEdgeCost, isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
+  isSharedNode, primaryShelterOf, REGIONS, HOME_ID,
 } from './map.js';
 import * as terminal from './terminal.js';
+import * as modal from './modal.js';
 import * as game from './state.js';
 import * as time from './timeSystem.js';
 import * as inventory from './inventory.js';
@@ -28,11 +30,20 @@ const GOAL2_ID = 'goal2';
 let nightEnded = false;      /* 本轮移动/选项期间是否刚好天亮了 */
 let sceneEl = null;
 
-/** 当前所在安全屋的储物键（形如 'area1:home'）；不在安全屋时返回 null */
+/** 当前所在安全屋的储物键（节点 id 全局唯一，直接用 id）；不在安全屋时返回 null */
 function currentShelterKey() {
-  const area = game.getCurrentArea();
   const node = game.getCurrentNode();
-  return isShelter(area, node) ? game.makeShelterKey(area, node) : null;
+  return isShelter(node) ? node : null;
+}
+
+/**
+ * 到达某节点：切换区域与节点，并把【共享节点】在每个所属区域里都标记为已访问。
+ * 「哪些区域含这个节点」是 map.js 的知识，所以这条规则放在 main.js（唯一协调者）里。
+ */
+function visitNode(areaId, nodeId) {
+  game.setCurrentArea(areaId);
+  game.setCurrentNode(nodeId);
+  for (const area of areasOfNode(nodeId)) game.markVisited(area, nodeId);
 }
 
 /** 视图切换：同时改 state（进存档）与 map（真正重绘），两者不允许各走各的 */
@@ -282,10 +293,10 @@ function onPocketClickAway(item) {
 }
 
 /** 当前节点是否处于「必须先做出决定」且尚未解除的状态（mustResolve） */
-function isMustResolvePending(areaId, nodeId) {
-  const node = getNode(areaId, nodeId);
+function isMustResolvePending(nodeId) {
+  const node = getNode(nodeId);
   if (!node || !node.mustResolve) return false;
-  return !game.isMustResolveResolved(areaId, nodeId);
+  return !game.isMustResolveResolved(nodeId);
 }
 
 /* ---------------- 选项 ---------------- */
@@ -350,7 +361,6 @@ const SHELTER_OPTIONS = [
 
 const OPTION_HANDLERS = {
   n3: { 1: enterCave },              /* 序号 1 对应 SCENES.n3 的「进入洞穴」 */
-  southgate: { 1: goCrossRegion },   /* 序号 1 对应 SCENES.southgate 的「前往南边的未知地域」 */
 };
 
 /* 按 option.kind 挂 handler：安全屋选项是运行时生成的，用序号会随插队错位 */
@@ -359,7 +369,7 @@ const KIND_HANDLERS = { overnight: overnightAtShelter, stay: stayAtShelter };
 function buildOptions(node) {
   const table = OPTION_HANDLERS[node.id] || {};
   const extra = ensureTimeOption(node);
-  const shelterExtras = isShelter(game.getCurrentArea(), node.id) ? SHELTER_OPTIONS : [];
+  const shelterExtras = isShelter(node.id) ? SHELTER_OPTIONS : [];
   const all = [...shelterExtras, ...node.options];
   if (extra) all.push(extra);
 
@@ -400,15 +410,20 @@ function refreshButtons() {
 async function travelTo(id) {
   if (game.isGameOver()) return;                     /* 0 */
   const area = game.getCurrentArea();
-  const node = getNode(area, id);
+  const node = getNode(id);
   if (!node) return;
 
   /* mustResolve：当前所在节点还没做出决定时不能离开（不消耗任何资源） */
-  if (isMustResolvePending(area, game.getCurrentNode())) {
+  if (isMustResolvePending(game.getCurrentNode())) {
     terminal.log(UI.mustResolveFirst);
     return;
   }
 
+  /* 只能在当前区域内移动：节点必须属于当前区域，且只查这个区域的边 */
+  if (!getNodeIds(area).includes(id)) {
+    terminal.log(UI.farAway);
+    return;
+  }
   if (!computeClickable(area, game.getVisitedByArea(area)).has(id)) {
     terminal.log(UI.farAway);
     return;
@@ -426,7 +441,7 @@ async function travelTo(id) {
   time.advanceTime(cost);
   if (nightEnded) return;                            /* 途中天亮：已被强制送回安全屋 */
 
-  game.visit(area, id);                              /* 4 到达安全屋不再自动结算，改由选项里的「过夜」触发 */
+  visitNode(area, id);                               /* 4 共享节点会在所属的每个区域里都标记 */
 
   await arriveAt(node);                              /* 5 正常到达流程 */
   if (game.isGameOver()) return;
@@ -440,7 +455,7 @@ async function travelTo(id) {
     return;
   }
 
-  if (!isShelter(area, id) && game.getStamina() <= 0) onForceHome('stamina');
+  if (!isShelter(id) && game.getStamina() <= 0) onForceHome('stamina');
 }
 
 async function arriveAt(node) {
@@ -462,41 +477,85 @@ async function arriveAt(node) {
   renderStatusBar();
   renderInventory();
   terminal.focusInput();
+
+  await resolveMustResolve(node);                    /* 7 到达流程结束后再弹 mustResolve 模态 */
 }
 
-/* ---------------- 跨区域移动 / 安全屋过夜 / 地图视图 ---------------- */
+/**
+ * mustResolve：到达关键节点后弹一个「必须从里面选一个」的模态。
+ * 无可点选项（requires 都不满足 / 都用过了）时不弹，输出提示并视为已解除，允许离开。
+ */
+async function resolveMustResolve(node) {
+  if (!node.mustResolve) return;
+  if (game.isMustResolveResolved(node.id)) return;
 
-/** 点击大地图上的区域块：当前区域切进区域地图，其他区域提示不在这里 */
-function onRegionClick(areaId) {
+  const choices = currentButtons().filter((b) => !b.disabled);
+  if (choices.length === 0) {
+    terminal.log(UI.mustResolveNothing);
+    game.markMustResolveResolved(node.id);
+    return;
+  }
+
+  const result = await modal.showModal({
+    title: node.name,
+    desc: node.mustResolveDesc,
+    items: choices.map((b) => ({ id: b.index, text: `[${b.index}] ${b.option.text}` })),
+    actions: [],                                    /* 没有底部按钮：必须从 items 里选一个 */
+  });
+
+  if (!result || result.type !== 'item') return;
+  await onOptionClick(result.id);                   /* 触发 handler；解除由 onOptionClick 负责 */
+}
+
+/* ---------------- 区域切换 / 安全屋过夜 / 地图视图 ---------------- */
+
+/**
+ * 点击大地图上的区域块（改动 2 + 改动 3）：
+ *   当前所在区域              → 进区域地图
+ *   相邻区域 + 站在共享节点上 → 允许切换（不消耗体力与时间）
+ *   相邻区域但不在共享节点上  → 「你不在通往那里的路上。」
+ *   不相邻                    → 「你无法直接前往那里，需要走陆路。」
+ * 未解锁区域根本不会渲染，所以走不到这里。
+ */
+async function onRegionClick(areaId) {
   if (!areaId) return;
-  if (areaId === game.getCurrentArea()) {
+
+  const current = game.getCurrentArea();
+  if (areaId === current) {
     switchMapView('area');
     return;
   }
-  terminal.log(UI.notHere);
-}
 
-/** southgate 的「前往南边的未知地域」：扣 1 体力并切换区域与节点（耗时已由选项 timeCost 扣过） */
-async function goCrossRegion() {
-  if (game.isGameOver()) return;
-
-  const area = game.getCurrentArea();
-  const target = getCrossRegionTarget(game.getCurrentNode(), area);
-  if (!target) return;
-  const node = getNode(target.areaId, target.nodeId);
-  if (!node) return;
-
-  if (game.getStamina() < MOVE_STAMINA_COST) {
-    terminal.log(UI.noStamina);
+  if (!isAreaNeighbor(current, areaId)) {
+    terminal.log(UI.cannotGoDirectly);
+    return;
+  }
+  if (!isSharedNode(game.getCurrentNode(), current, areaId)) {
+    terminal.log(UI.notOnTheWay);
     return;
   }
 
-  game.spendStamina(MOVE_STAMINA_COST);
-  game.visit(target.areaId, target.nodeId);   /* 同时把 entrance 记进 visitedByArea.area2 */
-  terminal.log(UI.crossRegionWalk);
-  switchMapView('area');                      /* 换区域后回到区域地图 */
+  await switchArea(areaId);
+}
 
-  await arriveAt(node);
+/**
+ * 在共享节点上切换区域视图：只换区域，玩家仍站在同一个节点上，
+ * 不消耗体力、不消耗时间。重绘地图并刷新按钮（两个区域的选项可能不同）。
+ */
+async function switchArea(areaId) {
+  game.setCurrentArea(areaId);
+  switchMapView('area');
+
+  const node = getNode(game.getCurrentNode());
+  if (!node) return;
+
+  game.setOptions(buildOptions(node));
+  setSceneArt(node.ascii);
+  refreshMap({ current: node.id });
+  refreshButtons();
+  renderStatusBar();
+  renderInventory();
+  terminal.log(UI.areaSwitched(getRegion(areaId).name));
 }
 
 /** 安全屋过夜：走与回家同一套结算流程，之后重新打印一次到达 */
@@ -517,50 +576,122 @@ function getPickableItems(node, collected) {
   return (node.items || []).filter((id) => !collected.has(id));
 }
 
+/**
+ * 拾取：整理物品式弹窗（改动 6）。
+ *   点单个物品 → 尝试拾取；空间不够就弹替换模态，处理完回到拾取模态；成功则该行消失
+ *   带走拿得下的 → 按节点 items 顺序依次尝试，遇到第一个拿不下的就停（不触发替换窗）
+ *   全部放弃 → 关闭，物品全部留在节点
+ * 拾取与放弃都不消耗时间。
+ */
 async function pickUpItems(node) {
   let changed = false;
 
-  for (const itemId of getPickableItems(node, game.state.collectedItems)) {
-    const item = ITEMS[itemId];
-    if (!item) continue;
+  for (;;) {
+    const pickable = getPickableItems(node, game.state.collectedItems);
+    if (pickable.length === 0) break;                 /* 列表空了 → 自动关闭 */
 
-    /* 优先级：口袋有空位 → 手持槽为空 → 都满才触发替换弹窗 */
-    const plan = inventory.planWildPickup(game.getPocket(), game.getEquipped());
-    if (plan.mode === 'pocket' || plan.mode === 'hand') {
-      if (plan.mode === 'pocket') {
-        game.addToPocket({ ...item });
-        terminal.log(UI.gotItem(item.name));
-      } else {
-        game.setEquippedSlot('hand', { ...item });
-        terminal.log(UI.toHand(item.name));
-      }
+    const result = await modal.showModal({
+      title: UI.pickupTitle,
+      desc: UI.pickupDesc,
+      items: pickable.map((itemId) => {
+        const item = ITEMS[itemId];
+        return { id: itemId, text: item ? item.name : itemId, hint: item ? item.desc : '' };
+      }),
+      actions: [
+        { text: UI.pickupTakeAll, value: 'takeAll' },
+        { text: UI.pickupSkipAll, value: 'skipAll' },
+      ],
+    });
+
+    if (!result) break;                               /* 被外部关掉 */
+    if (result.type === 'action') {
+      if (result.value === 'skipAll') break;           /* 全部放弃，物品留在节点 */
+      takeAsManyAsPossible(node);                     /* 带走拿得下的 */
+      changed = true;
+      break;
+    }
+
+    /* 点了某一件 */
+    const itemId = result.id;
+    const item = ITEMS[itemId];
+    if (!item) {                                      /* 文案缺失时的兜底：直接记走 */
       game.markItemCollected(itemId);
       dropFromNode(node, itemId);
       changed = true;
       continue;
     }
-
-    /* 口袋与手持槽都满了：弹窗选一件丢掉，或放弃拾取（未选择前不关闭，时间照常流逝） */
-    const choice = await terminal.showModal({
-      title: UI.discardTitle,
-      text: `捡到：${item.name}（${item.desc}）`,
-      actions: [
-        ...game.getPocket().map((held, index) => ({ label: `丢掉 ${held.name}`, value: index })),
-        { label: UI.discardCancel, value: null },
-      ],
-    });
-    if (choice === null || choice === undefined) continue;   /* 物品留在节点 */
-
-    const dropped = game.getPocket()[choice];
-    game.removeFromPocket(dropped);
-    game.addToPocket({ ...item });
-    game.markItemCollected(itemId);
-    dropFromNode(node, itemId);
-    terminal.log(UI.gotItem(item.name));
-    changed = true;
+    if (await tryTakeItem(node, itemId, item)) changed = true;
+    /* 玩家在替换窗里放弃 → 该件留在列表里，循环回到拾取模态继续让他选 */
   }
 
   if (changed) renderInventory();
+}
+
+/** 真正把一件记成已拾取（调用方已确认有位置） */
+function markTaken(node, itemId, logText) {
+  game.markItemCollected(itemId);
+  dropFromNode(node, itemId);
+  terminal.log(logText);
+}
+
+/**
+ * 尝试拾取一件：口袋优先 → 手持保底槽 → 都不行才弹替换模态。
+ * 返回是否拾取成功（玩家在替换窗放弃则返回 false，物品留在节点）。
+ */
+async function tryTakeItem(node, itemId, item) {
+  const plan = inventory.planWildPickup(game.getPocket(), game.getEquipped());
+
+  if (plan.mode === 'pocket') {
+    game.addToPocket({ ...item });
+    markTaken(node, itemId, UI.gotItem(item.name));
+    return true;
+  }
+  if (plan.mode === 'hand') {
+    game.setEquippedSlot('hand', { ...item });
+    markTaken(node, itemId, UI.toHand(item.name));
+    return true;
+  }
+
+  /* 口袋与手持槽都满了：替换模态（沿用原有「丢一件或放弃」的规则） */
+  const result = await modal.showModal({
+    title: UI.discardTitle,
+    desc: `捡到：${item.name}（${item.desc}）`,
+    items: game.getPocket().map((held, index) => ({
+      id: index, text: `丢掉 ${held.name}`, hint: held.desc || '',
+    })),
+    actions: [{ text: UI.discardCancel, value: 'cancel' }],
+  });
+
+  if (!result || result.type !== 'item') return false;   /* 放弃这一件 */
+
+  const dropped = game.getPocket()[result.id];
+  if (!dropped) return false;
+  game.removeFromPocket(dropped);
+  game.addToPocket({ ...item });
+  markTaken(node, itemId, UI.gotItem(item.name));
+  return true;
+}
+
+/** 「带走拿得下的」：按节点 items 顺序依次尝试，遇到第一个拿不下的就停 */
+function takeAsManyAsPossible(node) {
+  for (const itemId of getPickableItems(node, game.state.collectedItems)) {
+    const item = ITEMS[itemId];
+    if (!item) { game.markItemCollected(itemId); dropFromNode(node, itemId); continue; }
+
+    const plan = inventory.planWildPickup(game.getPocket(), game.getEquipped());
+    if (plan.mode === 'pocket') {
+      game.addToPocket({ ...item });
+      markTaken(node, itemId, UI.gotItem(item.name));
+      continue;
+    }
+    if (plan.mode === 'hand') {
+      game.setEquippedSlot('hand', { ...item });
+      markTaken(node, itemId, UI.toHand(item.name));
+      continue;
+    }
+    break;                                            /* 拿不下了：停，剩余留在节点 */
+  }
+  renderInventory();
 }
 
 function dropFromNode(node, itemId) {
@@ -574,7 +705,7 @@ async function onOptionClick(index) {
   if (game.isGameOver()) return;                     /* 0 */
 
   const area = game.getCurrentArea();
-  const node = getNode(area, game.getCurrentNode());
+  const node = getNode(game.getCurrentNode());
   const button = lastButtons.find((b) => b.index === index);
   const option = button && button.option;
   if (!node || !option) return;
@@ -594,7 +725,7 @@ async function onOptionClick(index) {
   game.markGroupUsed(node.id, option.group);
 
   /* mustResolve：做出任意一次选择即视为解除 */
-  if (node.mustResolve) game.markMustResolveResolved(area, node.id);
+  if (node.mustResolve) game.markMustResolveResolved(node.id);
 
   if (!nightEnded) await option.handler(option, node);           /* 4 */
 
@@ -643,7 +774,7 @@ function onNightEnd() {
   if (game.isGameOver()) return;
 
   const area = game.getCurrentArea();
-  if (!isShelter(area, game.getCurrentNode())) {
+  if (!isShelter(game.getCurrentNode())) {
     onForceHome('night');
     return;
   }
@@ -663,9 +794,8 @@ async function onForceHome(reason) {
 
   /* 4 按区域送回该区域自己的 primaryShelter（并标记已访问），不扣体力/时间 */
   const area = game.getCurrentArea();
-  const region = getRegion(area);
-  const shelterId = (region && region.primaryShelter) || HOME_ID;
-  game.visit(area, shelterId);
+  const shelterId = primaryShelterOf(area);
+  visitNode(area, shelterId);
   game.setStaminaMax(game.getStaminaMax() - FORCE_HOME_PENALTY);   /* 5 惩罚立即生效 */
 
   if (game.getStaminaMax() <= STAMINA_MIN) {         /* 6 走不动了：先结算，再 gameOver */
@@ -679,13 +809,13 @@ async function onForceHome(reason) {
   }
 
   /* 7 强制回家不再自动结算：送到安全屋后由玩家自己选「过夜」 */
-  await arriveAt(getNode(area, shelterId));
+  await arriveAt(getNode(shelterId));
 }
 
 /** 不打印到达文案地把 UI 切到当前安全屋（结算后 gameOver 时用） */
 function redrawShelterQuietly() {
   const area = game.getCurrentArea();
-  const node = getNode(area, game.getCurrentNode()) || getNode(area, HOME_ID);
+  const node = getNode(game.getCurrentNode()) || getNode(HOME_ID);
   if (!node) return;
   game.setOptions(buildOptions(node));
   setSceneArt(node.ascii);
@@ -750,7 +880,7 @@ async function importSave() {
   time.stopClock();                                   /* 1 停旧定时器 */
   game.replaceFromSnapshot(snapshot);                 /* 2 替换状态 */
   const area = game.getCurrentArea();
-  const node = getNode(area, game.getCurrentNode()) || getNode(area, HOME_ID);
+  const node = getNode(game.getCurrentNode()) || getNode(HOME_ID);
   game.setOptions(buildOptions(node));
   switchMapView(game.getMapView());                   /* 3 视图按存档恢复（大地图 / 区域地图） */
   time.startClock(onNightEnd);                        /* 4 重启定时器（重建时间基准） */
@@ -776,10 +906,12 @@ const debugContext = {
   getState: () => game.state,
   setState: (patch) => Object.assign(game.state, patch),
   goto: (nodeId, areaId) => {
-    const area = areaId || game.getCurrentArea();
-    const node = getNode(area, nodeId);
+    const node = getNode(nodeId);
     if (!node) return false;
-    game.visit(area, nodeId);
+    /* 指定区域时要求该节点确实属于那个区域；没指定就落在第一个含它的区域 */
+    const area = areaId || areasOfNode(nodeId)[0] || game.getCurrentArea();
+    if (!getNodeIds(area).includes(nodeId)) return false;
+    visitNode(area, nodeId);
     switchMapView('area');
     arriveAt(node);
     return true;
@@ -795,10 +927,12 @@ const debugContext = {
   gotoArea: (areaId) => {
     const region = getRegion(areaId);
     if (!region) return false;
-    const targetId = region.entranceNode || region.primaryShelter || (region.nodes[0] && region.nodes[0].id);
-    const node = targetId ? getNode(areaId, targetId) : null;
+    /* 优先用两个区域的共享节点切过去（玩家本来就站在那）；没有就落到该区域第一个节点 */
+    const shared = sharedNodes(game.getCurrentArea(), areaId);
+    const targetId = shared[0] || region.nodes[0];
+    const node = targetId ? getNode(targetId) : null;
     if (!node) return false;
-    game.visit(areaId, targetId);
+    visitNode(areaId, targetId);
     switchMapView('area');
     arriveAt(node);
     return true;
@@ -868,7 +1002,7 @@ function boot() {
   time.startClock(onNightEnd);
   window.setInterval(renderStatusBar, TICK_INTERVAL_MS);
 
-  arriveAt(getNode(game.getCurrentArea(), HOME_ID));
+  arriveAt(getNode(HOME_ID));
 }
 
 boot();
