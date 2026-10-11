@@ -125,6 +125,22 @@ export const UI = {
 
   discardTitle: '口袋满了，选一件丢掉，或者放弃拾取',
   discardCancel: '放弃拾取',
+
+  /* 随机事件：终端里那条输出统一加个前缀，方便一眼看出「这是事件」 */
+  eventLine: (text) => `【事件】${text}`,
+};
+
+/**
+ * 随机事件池的文案。
+ * 逻辑（哪个事件改什么）写在 js/events.js，这里只放字。
+ * id 与 events.js 的 EVENT_POOL 一一对应。
+ */
+export const EVENTS = {
+  coins: { text: '你在地上摸到几枚硬币，冰凉，边缘磨得发亮。' },
+  slip: { text: '脚下一滑，你单膝跪地撑住了身子。' },
+  supply: { text: '路边搁着一只没人要的包，里面的东西还能用。' },
+  flicker: { text: '路灯闪了两下，灯泡里的光暗下去一截。' },
+  lost: { text: '你拐错了一个路口，等反应过来已经多走了几条街。' },
 };
 
 /* 物品：slot 可装备槽位，pockets 提供口袋格数 */

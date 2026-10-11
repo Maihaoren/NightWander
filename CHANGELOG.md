@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.8.10` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.8.11` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `3` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -34,6 +34,96 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.8.11] — 2026-10-11 —— 黑暗区域改圆形 + 强制回家改选「可达的最近门户」 + 实装随机事件池
+
+**回档点**：`v1.8.11`
+
+### 修复
+
+**1. 黑暗区域显示改为圆形（`map.js` + `style.css`）**
+
+- 症状：`dark_core` 与大地图 `darkarea` 块用的是「深底 + 紫描边」的另一套配色，与普通节点不是一套语言。
+- 修复：
+  - 形状：黑暗地点与黑暗区域改画 **`<circle>`**（新增 `node-circle` / `region-circle` 元素），方形与菱形由 CSS 在 `.is-dark` 时隐藏。
+    - 节点圆的半径 = **节点框半宽**（`w / 2`）。节点框是扁矩形，只有用宽度才能把名字圈进去（`dark_core`＝「黑暗核心」4 字 × 26px）。
+    - 区域圆的半径 = **区域框半高**（`box.h / 2`）。`darkarea` 的框是 200×90 且贴在大地图下边缘，用高度才能保证整块圆落在框内、不出 1000×600 画布；区域名字号相应降到 18px 才放进圆里。
+  - 配色：填充与描边**沿用通用节点变量**（浅色黑框白底 / 深色白框深底），已访问用 `--node-visited-fill`、hover 用 `--hover-bg`、当前节点加粗描边 —— 全部与普通节点同一套，不再另造底色。
+    为此删除了 v1.8.10 引入的 5 个独立底色变量：`--dark-node-fill`、`--dark-node-hover`、`--dark-node-diamond`、`--dark-node-text`、`--dark-region-fill`。
+  - 保留的黑暗标识（与圆叠加）：圆环强调色 `--dark-node-stroke`（浅色 #7b3ba3 / 深色 #c07ae0）＋ 名字下方的 `[黑暗]` 小标签 `--dark-tag`（`UI.mapDarkTag`）。
+  - 自适应缩放照旧：半径由 `NODE_W * computeNodeScale()` 推出；当前节点的描边粗细仍用 `calc(9px * var(--node-scale, 1))`。
+  - 「已访问 / 未访问 / 当前 / 走不到 / 没电进不去」五种状态下的圆形都验过；标签排在「你在这里」下面一行且仍在圆内。
+
+**2. 强制回家改为「可达的最近门户（安全屋）」（`map.js` + `main.js`）**
+
+- 症状：强制回家直接调传送，绕过 v1.8.6 的「已探明路径连通性」判定，把玩家送到当前区域的 `primaryShelter`（可能根本不连通）。
+- 修复：
+  - `map.js` 新增导出 `isPortalNode(nodeId)`：**共享节点**（出现在 ≥2 个区域的 `nodes` 列表里）即门户，不手写名单 —— 现状是 `home` / `lighthouse` / `northpass` / `northgate` / `southpass`，以后加新门户自动生效。
+  - `map.js` 新增导出 `findNearestReachableShelter(currentNodeId, regionId)`：在**两端都已访问（已探明）**的边子图上从当前节点出发找最近门户。
+  - `main.js` 新增 `forceHomeTarget()`：先问上面的函数；找不到就退回 `primaryShelterOf(区域)` 并 `console.warn` 一条 debug 日志。
+    三条强制回家流程（体力归零 / 06:00 天亮 / 黑暗归零）**全部改用它**，顺序统一为「先传送 → 后结算」（v1.8.10 已定，本轮沿用）。
+  - 结算差异（按你的表落实，`main.js`）：
+    | 流程 | 落点 | 天数 +1 / 时间归零 | 体力上限 | 电量 |
+    |---|---|---|---|---|
+    | 体力归零 | `forceHomeTarget()` | 是 | **-1** | 落点是 `home` 才回满 |
+    | 06:00 天亮 | `forceHomeTarget()` | 是 | **不扣**（本轮改） | 落点是 `home` 才回满 |
+    | 黑暗归零 | `forceHomeTarget()` | 是 | 不扣 | 落点是 `home` 才回满（darkarea 里落点是 southpass，所以保持 0） |
+  - 两条连带变化（都在你的差异表里）：**06:00 天亮不再扣体力上限**（原先两种 reason 都扣）；**体力归零现在也会结算**（原先只传送+扣上限，由玩家自己点过夜，这是 v1.8.5 的老规则）。
+
+### 新增
+
+**3. 随机事件池（新建 `js/events.js` + `config.js` + `main.js` + `texts.js` + `debug.js`）**
+
+- 新建 `js/events.js`：事件池 `EVENT_POOL`（5 个）、抽取 `pickEvent(rng)`、强制触发 `triggerEvent(id, nodeId)`、掷骰 `rollEvent(nodeId, rng)`、`listEventIds()`。
+  不碰 DOM（终端输出由 `main.js` 负责），文案全部来自 `texts.js` 的 `EVENTS`。
+- 触发时机（由 `main.js` 决定，模块本身不挂时机）：
+  1. **移动到达节点时**：`travelTo` 里 `await arriveAt(node)` 之后、体力负值判断之前掷一次（这样「脚下一滑 -1 体力」正好能参与负值强制回家判断）；
+  2. **每次消耗时间后**：`onOptionClick` 末尾，且满足「该选项 `timeCost > 0`」且「没被天亮/黑暗断电打断」才掷。
+  移动本身不在 `advanceTime` 里掷 —— 避免一个动作掷两次。
+- 几率：`config.EVENT_CHANCE = 0.15`，每个触发点只掷一次（`Math.random() < EVENT_CHANCE` 才抽事件），事件可重复触发。
+- 5 个测试事件：`coins` 拾得零钱（无状态改动）、`slip` 脚下一滑（体力 -1）、`supply` 路边补给（当前节点刷出 1 件物品，走现有节点物品池并解除「已拾取」标记）、`flicker` 路灯闪烁（电量 -5%）、`lost` 迷路片刻（时间 +300 秒，走 `time.advanceTime`，因此也照常扣电并检查天亮）。
+- 开关：`state.getEventsEnabled()` 是唯一的闸门（`/event` 控制，存 localStorage `game_events_enabled`）；关闭时连随机数都不消耗。
+- `debug.js` 的 `/event` 从「空转」改为**走真正的开关接口**：优先调 `main.js` 注入的 `ctx.setEventsEnabled`（= `state.setEventsEnabled`，它一并写 localStorage），拿不到时才退回旧写法；
+  返回值里附上事件池 id 列表（`ctx.eventIds`）便于确认已生效。`EVENTS_DEFAULT` **保持 `false`**（按你的建议，测试时 `/event on`）。
+
+### 变更
+
+| 文件 | 改动 |
+|---|---|
+| `v6/js/map.js` | 新增导出 `isPortalNode()`、`findNearestReachableShelter()`（+ 内部 `edgeWeight()`）；`renderArea()` 给 isDark 节点加 `circle` 元素并调整标签纵坐标；`renderWorld()` 给黑暗区域加 `circle` 元素 |
+| `v6/js/main.js` | 新增 `forceHomeTarget()`、`rollRandomEvent()`；`onForceHome()` 改用 `forceHomeTarget()` 且只在体力归零时扣上限、两条路径都 `settleNight()`；`onBatteryCollapse()` 改用 `forceHomeTarget()`；`travelTo()` 加事件触发点一；`onOptionClick()` 加事件触发点二；`debugContext` 增加 `setEventsEnabled` / `eventIds` |
+| `v6/js/events.js` | **新建**：事件池 + 抽取 + 触发 + 掷骰 |
+| `v6/js/config.js` | 新增 `EVENT_CHANCE = 0.15`；`EVENTS_DEFAULT` 注释更新（值仍为 false）；`GAME_VERSION` → `v1.8.11` |
+| `v6/js/texts.js` | 新增 `EVENTS`（5 条事件文案）与 `UI.eventLine` |
+| `v6/js/debug.js` | `/event` 改为经 `ctx.setEventsEnabled` 真正开关，并在返回文案里附上事件池 id |
+| `v6/style.css` | 新增 `.node-circle` / `.region-circle` 与黑暗圆形规则；删除 5 个独立底色变量；保留 `--dark-node-stroke` / `--dark-tag` |
+| `HANDOFF.md` | 游戏版本同步 `v1.8.11` |
+
+**未改动（已核对）**：`v6/js/state.js`（`setEventsEnabled` / `getEventsEnabled` 本来就齐）、`v6/js/timeSystem.js`（事件的时间改动直接复用它的 `advanceTime`）、`v6/js/inventory.js`、`v6/js/saveSystem.js`。
+
+**存档格式**：`VERSION` 仍为 **`3`**，**未变**，旧存档照常加载（事件开关本来就在 localStorage，不进存档）。
+
+### 验证
+
+- 模块链接检查（**新增 events.js 一并纳入**，11 个模块 OK + `main` 需 DOM）、DOM 桩 `boot()` 无异常、12 个 js 文件 `node --check`、`style.css` 花括号 128/128 配平。
+- 76 项断言全部通过（`.tools/nw_r12_check.mjs`，DOM 桩里真跑 `boot()` / 真点按钮 / 真跑 `tick`）：
+  - **圆形**：`dark_core` 有 `circle`（半径 = 节点框半宽）且方形/菱形被隐藏；未访问 / 已访问 + 当前 / 没电进不去三种状态都带 `is-dark` 且圆还在；`[黑暗]` 标签在圆内、排在「你在这里」下面；`darkarea` 区域块有圆（半径 = 区域框半高，且圆不越出 1000×600 画布）；普通节点/区域没有圆；5 个旧底色变量确实已删、填充确实走 `--node-fill` / `--node-visited-fill`。
+  - **最近门户**：`isPortalNode` 对 5 个共享节点为真、对普通节点为假；只走已探明边（未探明时 `n1` 孤立 → `null`）；起点本身是门户时返回自己；`n2` / `n5` 得 `home`、`n7` 得直连门户；`distance` 判定（当前无 `distance` 字段 → 走跳数 BFS，缺字段时有坐标兜底）；三条流程都调用 `forceHomeTarget()`；**实测**：体力归零（n2 → home，天数 +1、上限 -1、体力回满、电量回满）、天亮（n2 → home，天数 +1、**上限不扣**、电量回满）、黑暗归零（dark_core → southpass，天数 +1、不扣上限、电量保持 0）。
+  - **事件池**：`EVENT_CHANCE`/`EVENTS_DEFAULT` 值；池 5 个、id 与 `texts.js` 一一对应；`pickEvent` 边界（注入 rng 取首/尾/中）；5 个事件各自效果（零钱无改动、滑倒 -1 体力、补给刷出合法物品且解除已拾取、闪烁 -5% 电量、迷路 +300 秒）；关着时掷骰返回 `null`；命中/未命中区间各 2000 次全对；两个触发点代码位置与「移动不在 advanceTime 里掷」；`/event on|off|reset|切换|非法参数` 的行为与写盘；**端到端**：把 `Math.random` 钉成 0.01（默认参数在调用时求值）后，一次移动与一次消耗时间的选项都稳定掷出事件行，关掉开关后同样的操作 0 次触发。
+- 旧套件回归：v1.8.6 ~ v1.8.10 全部通过。若干条断言按本轮的行为变化**改写并注明原因**（天亮不再扣上限、体力归零也结算、黑暗配色变量删除、回家目标改门户）。
+
+### 已知限制 / 遗留
+
+- **平手时选谁由边序决定**：`n7` 直连 `lighthouse` / `northpass` / `southpass` 三个门户，都在 1 跳上；谁先被遍历到就选谁（测试里实测是 `southpass`，因为那句之前它已被标记为已访问）。如果你希望平手时优先 `home`（它才会回电），说一句即可加一条 tie-break。
+- **「最近」现在是跳数**：所有边都只写了 `{ from, to }`，没有 `distance` 字段，所以走的是普通 BFS。想让「最近」按路程或时间算，需要给边补 `distance`（权重分支已经写好）或改用现成的 `computeEdgeCost`（耗时）。
+- **门户 ≠ 可过夜**：`isPortalNode()` 是「是不是区域出入口」，与 `isShelter()`（所有区域 `primaryShelter` 的并集，决定过夜选项与储物箱）是两个概念。差别在 `northgate`：它是门户但当前不是 `isShelter`，所以被送到那里时没有过夜选项。要不要统一成一个概念，请你定。
+- **黑暗归零的落点若正好是 `home`，电量会回满**：回电是全局规则「落点 === home 才回电」，本轮没有为黑暗这条单独写特例（`darkarea` 里最近门户是 `southpass`，所以正常情况仍保持 0）。
+- **事件触发点一排在 `arriveAt` 之后**，而 `arriveAt` 末尾会弹 `mustResolve` 模态 —— 所以带 `mustResolve` 的节点上，事件会在玩家做出选择之后才输出。
+- 「路边补给」的候选是 `compass` / `pocketwatch` / `darkshard` / `oldmap` 四件小件，池子写死在 `events.js` 的 `SUPPLY_ITEMS`，要调很容易。
+- 本轮**我自己的 PowerShell 改写脚本出过一次事故**：一个 `@( @(...) )` 数组字面量被 PowerShell 展平，导致两个临时测试脚本被 `e→q` 与 `/→*` 误伤。**产品代码未受影响**（已逐个核对首字节、BOM 与 `node --check`）。其中一个脚本已还原，另一个（`nw_r9_check.mjs`）无法还原、已删除 —— 它覆盖的 v1.8.8 行为现在由 `nw_r9_e2e.mjs` / `nw_r10` / `nw_r11` / `nw_r12` 重复覆盖。
+- 预先存在、本轮**未处理**：`m1`（枯树林）的 ASCII 图是 11 行，与项目「12 行」约定不符。
 
 ---
 

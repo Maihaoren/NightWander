@@ -362,6 +362,103 @@ export function isDarkRegion(regionId) {
   return getNodeIds(regionId).some((id) => isDarkNode(id));
 }
 
+/**
+ * 该节点是不是「门户」＝安全屋：出现在 ≥ 2 个区域的 nodes 列表里（即共享节点）。
+ * 不手写名单，以后新增门户自动就是安全屋。
+ *   现状：home（home/newarea1/area1）、lighthouse（area1/area2）、
+ *         northpass（area1/newarea2）、northgate（newarea1/newarea2）、southpass（area1/darkarea）
+ *
+ * 注意它与 isShelter() 的区别：isShelter() 是「所有区域 primaryShelter 的并集」，
+ * 决定谁能提供过夜选项与储物箱（含 northpass / southpass，不含 northgate）；
+ * 本函数只回答「这是不是区域的出入口」，供寻路挑选强制回家的落点。
+ */
+export function isPortalNode(nodeId) {
+  return areasOfNode(nodeId).length >= 2;
+}
+
+/**
+ * 从 currentNodeId 出发，在【两端都已访问（已探明）】的边构成的子图上，
+ * 找【可达的最近门户（安全屋）】—— 强制回家用它挑落点，避免把人送到走不到的地方。
+ *
+ * 距离口径：
+ *   - 该区域已探明边里只要有一条带 distance 字段 → 按 distance 累加（Dijkstra，带权）
+ *     （某条边缺 distance 时退回两端节点的逻辑坐标距离，避免图被断开）
+ *   - 一条都没有 distance 字段 → 按跳数最少（普通 BFS）
+ *   现状：所有边都只写了 { from, to }，没有 distance，所以走的是「跳数最少」。
+ *
+ * 起点自身也算候选（站在门户上时距离 0，强制回家就是原地不动，只结算）。
+ * 找不到（理论上不会：玩家总是从某个门户进来的，那个门户必然可达）返回 null，由调用方兜底。
+ *
+ * @param {string} [currentNodeId] 起点；省略则用 state 里的当前节点
+ * @param {string} [regionId] 限定在哪个区域里找；省略则用当前区域
+ * @returns {string|null} 门户节点 id
+ */
+export function findNearestReachableShelter(currentNodeId = null, regionId = null) {
+  const area = regionId || game.getCurrentArea();
+  const from = currentNodeId || game.getCurrentNode();
+  const ids = getNodeIds(area);
+  if (!from || !ids.includes(from)) return null;
+  /* 起点本身就是门户 → 最近的就是它 */
+  if (isPortalNode(from)) return from;
+
+  const visited = getVisitedIn(area);
+  const edges = getEdges(area).filter((e) => visited.has(e.from) && visited.has(e.to));
+  const weighted = edges.some((e) => Number.isFinite(e.distance));
+
+  const adj = new Map(ids.map((id) => [id, []]));
+  for (const e of edges) {
+    if (!adj.has(e.from) || !adj.has(e.to)) continue;
+    const w = weighted ? edgeWeight(e) : 1;
+    adj.get(e.from).push([e.to, w]);
+    adj.get(e.to).push([e.from, w]);
+  }
+
+  if (!weighted) {
+    /* 普通 BFS：跳数最少。同一层按邻接表顺序走，结果稳定（平手时先被遍历到的赢） */
+    const seen = new Set([from]);
+    const queue = [from];
+    while (queue.length) {
+      const cur = queue.shift();
+      for (const [next] of adj.get(cur)) {
+        if (seen.has(next)) continue;
+        if (isPortalNode(next)) return next;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    return null;
+  }
+
+  /* 带权 Dijkstra（只在边上有 distance 字段时才会走到这里） */
+  const dist = new Map([[from, 0]]);
+  const done = new Set();
+  for (;;) {
+    let cur = null;
+    let best = Infinity;
+    for (const [id, d] of dist) {
+      if (done.has(id) || d >= best) continue;
+      cur = id;
+      best = d;
+    }
+    if (cur === null) return null;
+    if (cur !== from && isPortalNode(cur)) return cur;
+    done.add(cur);
+    for (const [next, w] of adj.get(cur)) {
+      if (done.has(next)) continue;
+      const nd = best + w;
+      if (nd < (dist.get(next) ?? Infinity)) dist.set(next, nd);
+    }
+  }
+}
+
+/** 一条已探明边的权重：优先用边自带的 distance，缺了就用两端节点的逻辑坐标距离 */
+function edgeWeight(edge) {
+  if (Number.isFinite(edge.distance)) return edge.distance;
+  const a = getNode(edge.from);
+  const b = getNode(edge.to);
+  return (a && b) ? distance(a, b) : 1;
+}
+
 export function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
@@ -915,6 +1012,13 @@ function renderWorld() {
       class: 'region-diamond',
       points: `${cx},${cy - box.h / 2} ${cx + box.w / 2},${cy} ${cx},${cy + box.h / 2} ${cx - box.w / 2},${cy}`,
     }));
+    /* 黑暗区域画【圆】：半径取区域框的半个高（区域框比节点框更扁，用高度才能保证
+       整块圆落在自己的框里、不出大地图画布）；区域名的字号在 CSS 里相应调小以放进圆内。 */
+    if (isDarkRegion(id)) {
+      group.appendChild(svgNode('circle', {
+        class: 'region-circle', cx, cy, r: box.h / 2,
+      }));
+    }
     const label = svgNode('text', { class: 'region-name', x: cx, y: cy + 8 });
     label.textContent = region.name;
     group.appendChild(label);
@@ -1030,6 +1134,13 @@ function renderArea(regionId) {
       class: 'node-diamond',
       points: `${p.x},${p.y - d} ${p.x + d},${p.y} ${p.x},${p.y + d} ${p.x - d},${p.y}`,
     }));
+    /* 黑暗地点画【圆】：半径取节点框的半个宽（节点框是扁矩形，用宽度才能把名字圈进去）。
+       矩形与菱形由 CSS 在 .is-dark 时隐藏，配色沿用通用节点变量（见 style.css）。 */
+    if (node.isDark) {
+      group.appendChild(svgNode('circle', {
+        class: 'node-circle', cx: p.x, cy: p.y, r: w / 2,
+      }));
+    }
     const label = svgNode('text', {
       class: 'node-name', x: p.x, y: p.y + 9, style: `font-size:${nameSize}px`,
     });
@@ -1045,13 +1156,13 @@ function renderArea(regionId) {
       group.appendChild(hereEl);
     }
 
-    /* 黑暗地点的小标签：放在「你在这里」下面一行，避免两者叠在一起。
+    /* 黑暗地点的小标签：圆形里排在名字下面一行（「你在这里」也显示时再往下让一行）。
        未访问时节点名被 CSS 藏起来，但这个标签照常显示 —— 它不泄露名字，只说明这里很黑。 */
     if (node.isDark) {
       const darkTag = svgNode('text', {
         class: 'dark-tag',
         x: p.x,
-        y: p.y + h / 2 + (st === 'current' ? 30 : 16),
+        y: p.y + Math.round(h / 2 + (st === 'current' ? 24 : 6)),
         style: `font-size:${hereSize}px`,
       });
       darkTag.textContent = UI.mapDarkTag;

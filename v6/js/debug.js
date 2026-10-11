@@ -165,11 +165,18 @@ function execute(input, state, ctx) {
       else if (arg === '') next = !current;                    /* 无参数：切换 */
       else return '用法：/event {on|off|reset}';
 
-      state.eventsEnabled = next;
-      try { localStorage.setItem('game_events_enabled', String(next)); } catch (err) { /* 写盘失败不影响本次会话 */ }
+      /* 真正开关事件系统：优先走 main 注入的 state.setEventsEnabled（它同时写 localStorage），
+         拿不到时才退回直接改 state + 自己写盘。事件池在 js/events.js，掷骰由 main.js 在两处触发点调用 */
+      if (typeof ctx.setEventsEnabled === 'function') ctx.setEventsEnabled(next);
+      else {
+        state.eventsEnabled = next;
+        try { localStorage.setItem('game_events_enabled', String(next)); } catch (err) { /* 写盘失败不影响本次会话 */ }
+      }
 
-      if (arg === 'reset') return `随机事件系统：已重置为默认（${EVENTS_DEFAULT ? '开' : '关'}）`;
-      return next ? '随机事件系统：已开启' : '随机事件系统：已关闭';
+      const pool = typeof ctx.eventIds === 'function' ? ctx.eventIds() : [];
+      const tail = pool.length ? `（事件池 ${pool.length} 个：${pool.join('/')}）` : '';
+      if (arg === 'reset') return `随机事件系统：已重置为默认（${EVENTS_DEFAULT ? '开' : '关'}）${tail}`;
+      return (next ? '随机事件系统：已开启' : '随机事件系统：已关闭') + tail;
     }
 
     case '/version': {

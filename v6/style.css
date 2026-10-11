@@ -30,14 +30,10 @@
   --unvisited-node-border: #000000;
   --unvisited-node-fill: #ffffff;
 
-  /* 黑暗地点 / 黑暗区域（isDark）：底色压深 + 紫色描边，与「已访问 / 未访问 / 当前 / 走不到」
-     四种节点状态叠加时都还看得出来；浅色主题下用深底白字保证可读 */
-  --dark-node-fill: #1b1026;        /* 节点底色：比普通节点深得多 */
-  --dark-node-hover: #3a1f4d;       /* hover 时的底色（不换成普通 hover 灰，保住「这是黑暗地点」） */
-  --dark-node-stroke: #7b3ba3;      /* 描边：紫 */
-  --dark-node-text: #ffffff;        /* 节点名 */
-  --dark-node-diamond: #2c1440;     /* 未访问时的菱形填充 */
-  --dark-region-fill: #241031;      /* 大地图区域块底色 */
+  /* 黑暗地点 / 黑暗区域：形状改用【圆】（见 .node-circle / .region-circle 规则），
+     填充与描边沿用通用节点变量（浅色黑框白底 / 深色白框深底），不再另造一套底色。
+     只保留两项「黑暗标识」：圆环的强调色，以及名字下方的 [黑暗] 小标签。 */
+  --dark-node-stroke: #7b3ba3;      /* 圆环强调色（紫） */
   --dark-tag: #6d2f92;              /* [黑暗] 小标签 */
 
   --gap: 10px;
@@ -77,13 +73,9 @@ html[data-theme="dark"] {
   --unvisited-node-border: #ffffff;
   --unvisited-node-fill: #1a1a1a;
 
-  /* 黑暗地点 / 黑暗区域：深色主题下底色再深一点、描边与标签提亮，仍是紫系 */
-  --dark-node-fill: #2a1035;
-  --dark-node-hover: #4a2060;
+  /* 黑暗地点 / 黑暗区域：底色同通用节点（深色主题 = 白框深底），
+     圆环强调色与标签在深色主题下提亮，保证可读 */
   --dark-node-stroke: #c07ae0;
-  --dark-node-text: #f7ecff;
-  --dark-node-diamond: #3a1247;
-  --dark-region-fill: #331340;
   --dark-tag: #c07ae0;
   /* 故意不覆盖 --term-*：终端两种主题下保持一致 */
 }
@@ -293,41 +285,60 @@ body {
 
 .map .node.is-unseen:hover .node-diamond { stroke-width: 3; }
 
-/* ---------- 黑暗地点 / 黑暗区域标识（isDark） ----------
-   放在所有节点状态规则【之后】：同权重时后写的赢，这样底色与描边才能盖住
-   「已访问实心块 / 未访问菱形 / 当前节点 / 走不到 / 没电进不去」那几种状态，
+/* ---------- 黑暗地点 / 黑暗区域标识（isDark）：圆形 ----------
+   形状方案（v1.8.11 起）：黑暗地点/黑暗区域画成【圆】，与普通节点的方形/菱形区分；
+   配色沿用通用节点变量（浅色黑框白底 / 深色白框深底），不另造一套底色；
+   黑暗标识只保留两项 —— 圆环的强调色，以及名字下方的 [黑暗] 小标签。
+   这组规则放在所有节点状态规则【之后】：同权重时后写的赢，所以圆形能盖掉方形/菱形，
    同时下面单独给 .is-current 与 hover 补规则，保证原有状态提示不被吃掉。 */
 
-/* 节点：底色压深 + 紫色描边（矩形态） */
-.map .node.is-dark .node-rect {
-  fill: var(--dark-node-fill);
-  stroke: var(--dark-node-stroke);
-  stroke-dasharray: none;
+/* 圆形默认不画（只有 isDark 才画出来） */
+.map .node-circle,
+.map .region-circle { display: none; }
+
+/* 黑暗地点：隐藏方形与菱形，改画圆 */
+.map .node.is-dark .node-rect,
+.map .node.is-dark .node-diamond { display: none; }
+
+.map .node.is-dark .node-circle {
+  display: block;
+  fill: var(--node-fill);                  /* 通用配色：浅色白底 */
+  stroke: var(--dark-node-stroke);         /* 黑暗标识：圆环强调色 */
+  stroke-width: 3;
+  transition: fill 80ms linear, stroke-width 80ms linear;
 }
 
-/* 节点：未访问时画的是菱形，同样换掉填充与描边 */
-.map .node.is-dark .node-diamond {
-  fill: var(--dark-node-diamond);
-  stroke: var(--dark-node-stroke);
+/* 已访问 / 当前所在 / hover 都沿用通用节点那一套，只是作用在圆上 */
+.map .node.is-dark.is-visited .node-circle { fill: var(--node-visited-fill); }
+
+.map .node.is-dark.is-current .node-circle {
+  stroke-width: calc(9px * var(--node-scale, 1));   /* 与普通节点的「当前」一样加粗 */
+}
+
+.map .node.is-dark.is-open:hover .node-circle {
+  fill: var(--hover-bg);                            /* 与普通节点的 hover 反馈一致 */
   stroke-width: 3;
 }
 
-.map .node.is-dark .node-name { fill: var(--dark-node-text); }
+/* 大地图：黑暗区域块同样改画圆（半径由 JS 取区域框的半个高，保证落在框内） */
+.map .region.is-dark .region-rect,
+.map .region.is-dark .region-diamond { display: none; }
 
-/* 「当前所在」原本用反色粗描边标识；黑暗地点上换成紫色粗描边，两项提示都保住 */
-.map .node.is-dark.is-current .node-rect {
+.map .region.is-dark .region-circle {
+  display: block;
+  fill: var(--node-fill);
   stroke: var(--dark-node-stroke);
-  stroke-width: calc(9px * var(--node-scale, 1));
+  stroke-width: 3;
+  transition: fill 80ms linear, stroke-width 80ms linear;
 }
 
-/* hover 反馈不换回普通灰底，免得一悬浮就看不出这是黑暗地点 */
-.map .node.is-dark.is-open:hover .node-rect { fill: var(--dark-node-hover); }
-.map .node.is-dark.is-open:hover .node-diamond { fill: var(--dark-node-hover); }
+.map .region.is-dark.is-visited .region-circle { fill: var(--node-visited-fill); }
+.map .region.is-dark.is-open:hover .region-circle { fill: var(--hover-bg); }
 
-/* 大地图：黑暗区域块用同一套底色 + 紫色粗描边 */
-.map .region.is-dark .region-rect {
-  fill: var(--dark-region-fill);
-  stroke: var(--dark-node-stroke);
+/* 圆形里的区域名字号调小：区域框只有 90px 高，圆的直径就那么大，24px×4 字放不进去 */
+.map .region.is-dark .region-name {
+  font-size: 18px;
+  letter-spacing: 1px;
 }
 
 /* [黑暗] 小标签：节点与区域共用；未访问时它照常显示（不泄露名字，只说明这里很黑） */
@@ -339,6 +350,9 @@ body {
   pointer-events: none;
   letter-spacing: 1px;
 }
+
+/* 区域圆里的名字用白色时（已访问的深底圆）标签也要跟着亮，否则紫字压在黑底上看不清 */
+.map .region.is-dark.is-visited .dark-tag { fill: var(--node-visited-text); }
 
 /* ---------- 大地图（区域块 / 区域通道） ---------- */
 .map .region { cursor: pointer; }

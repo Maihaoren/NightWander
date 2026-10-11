@@ -14,7 +14,7 @@ import {
   isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
   isSharedNode, primaryShelterOf, getVisitedIn,
   reachableVisited, hasDirectEdge, calcMoveDuration, clearMoveDurationCache, REGIONS, HOME_ID,
-  isDarkNode, isNodeBlockedByDarkness,
+  isDarkNode, isNodeBlockedByDarkness, findNearestReachableShelter,
 } from './map.js';
 import * as terminal from './terminal.js';
 import * as modal from './modal.js';
@@ -23,6 +23,7 @@ import * as time from './timeSystem.js';
 import * as inventory from './inventory.js';
 import * as save from './saveSystem.js';
 import * as debug from './debug.js';
+import * as events from './events.js';
 
 const THEME_KEY = 'nightwander:theme';
 
@@ -570,6 +571,11 @@ async function travelTo(id) {
     return;
   }
 
+  /* 5.5 【事件触发点一】移动到达节点时掷一次。
+        放在到达流程之后、体力负值判断之前：
+        这样「脚下一滑 -1 体力」正好能参与下面那条负值强制回家判断。 */
+  rollRandomEvent(id);
+
   /* 6 体力为负：正好在安全屋就地结算（不惩罚），否则强制回家 + 惩罚 */
   if (game.getStamina() < 0) {
     if (isShelter(id)) settleNight();
@@ -868,6 +874,27 @@ function dropItemToNode(item) {
   renderInventory();                                 /* 刷新物品栏 + 当地物品区 */
 }
 
+/* ---------------- 随机事件（触发点在 main，池与效果在 events.js） ---------------- */
+
+/**
+ * 在某个触发点掷一次随机事件并打印结果。
+ * 系统关着 / 没命中 / 游戏结束都返回 null，什么都不做。
+ * 事件的附加说明（比如刷出了什么）跟在氛围文案后面一行。
+ */
+function rollRandomEvent(nodeId = null) {
+  const result = events.rollEvent(nodeId);
+  if (!result) return null;
+
+  terminal.log(UI.eventLine(result.text));           /* 文本一律来自 texts.js */
+  if (result.extra) terminal.log(result.extra);
+
+  /* 事件可能改了体力 / 电量 / 时间 / 节点物品池，重绘一次 */
+  renderStatusBar();
+  renderInventory();
+  refreshMap({ current: game.getCurrentNode() });
+  return result;
+}
+
 /* ---------------- 选项执行 ---------------- */
 
 async function onOptionClick(index) {
@@ -906,6 +933,13 @@ async function onOptionClick(index) {
   refreshButtons();                                  /* 5 */
   renderStatusBar();
   renderInventory();
+
+  /* 6 【事件触发点二】「每次消耗时间后掷一次」：
+        只在这个选项真的消耗了游戏内时间、且没被天亮/断电打断时掷。
+        移动本身不在这里掷 —— 移动的事件由 travelTo 的「到达」那一掷负责，避免一个动作掷两次。 */
+  if (!nightEnded && !batteryCollapsed && (option.timeCost || 0) > 0) {
+    rollRandomEvent(node.id);
+  }
 }
 
 /* ---------------- 命令输入 ---------------- */
@@ -957,21 +991,41 @@ function onNightEnd() {
   settleNight();
 }
 
+/**
+ * 强制回家的落点：当前节点在【已探明图】上可达的最近门户（安全屋）。
+ * 门户 = 共享节点（出现在 ≥2 个区域的 nodes 列表里），由 map.isPortalNode 自动识别，
+ * 不手写名单。这样送到的落点一定沿已探明路径走得回去，不会把人扔到走不到的地方。
+ *
+ * 兜底：理论上不会找不到（玩家总是从某个门户进来的，那个门户必然可达）；
+ * 真找不到就退回本区域 primaryShelter，并打一条 debug 日志。
+ */
+function forceHomeTarget() {
+  const area = game.getCurrentArea();
+  const found = findNearestReachableShelter(game.getCurrentNode(), area);
+  if (found) return found;
+
+  console.warn('[NightWander] 找不到可达门户，退回 primaryShelter：',
+    { area, node: game.getCurrentNode(), shelter: primaryShelterOf(area) });
+  return primaryShelterOf(area);
+}
+
 async function onForceHome(reason) {
   if (game.isGameOver()) return;                     /* 1 */
 
   terminal.clearQueue();                             /* 2 */
   terminal.log(reason === 'night' ? UI.nightHome : UI.collapse);   /* 3 */
 
-  /* 4 按区域送回该区域自己的 primaryShelter（并标记已访问），不扣体力/时间。
+  /* 4 先挑落点：可达的最近门户（不再是「本区域 primaryShelter 写死」）。
        顺序很重要：先 visitNode，后面的结算读到的才是【传送后的节点】 */
   const area = game.getCurrentArea();
-  const shelterId = primaryShelterOf(area);
+  const shelterId = forceHomeTarget();
   visitNode(area, shelterId);
-  game.setStaminaMax(game.getStaminaMax() - FORCE_HOME_PENALTY);   /* 5 惩罚立即生效 */
+
+  /* 5 体力上限惩罚：只有【体力归零】这条扣；06:00 天亮是自然现象，不扣 */
+  if (reason !== 'night') game.setStaminaMax(game.getStaminaMax() - FORCE_HOME_PENALTY);
 
   if (game.getStaminaMax() <= STAMINA_MIN) {         /* 6 走不动了：先结算，再 gameOver */
-    settleNight();                                   /* a) 天数 +1、时间归零、体力回满（回电看当前节点是不是 home） */
+    settleNight();                                   /* a) 天数 +1、时间归零、体力回满（回电看落点是不是 home） */
     game.setGameOver(true);                          /* b) */
     terminal.log(UI.gameOverStamina);                /* c) "你已经精疲力尽，再也走不动了。游戏结束。" */
     time.stopClock();                                /* d) 停止时钟 */
@@ -980,18 +1034,10 @@ async function onForceHome(reason) {
     return;                                          /* f) */
   }
 
-  /* 7 天亮：走与「主动过夜」完全相同的结算（settleNight）。
-        这里曾经是半套代码（只加天数、只归零计时），于是 06:00 被送回家后
-        体力与电量都不刷新，玩家还得再点一次「过夜」，天数又白加一天。
-        结算安排在 visitNode 之后，所以送回的节点是 home 时电量会回满。 */
-  if (reason === 'night') {
-    settleNight();
-    await arriveAt(getNode(game.getCurrentNode()));
-    return;
-  }
-
-  /* 8 体力归零强制回家不再自动结算：送到安全屋后由玩家自己选「过夜」 */
-  await arriveAt(getNode(shelterId));
+  /* 7 两条路径都走「主动过夜」同一套结算（settleNight），差别只在上面那步是否扣上限。
+        结算安排在 visitNode 之后，所以落点是 home 时电量会回满。 */
+  settleNight();
+  await arriveAt(getNode(game.getCurrentNode()));
 }
 
 /** 不打印到达文案地把 UI 切到当前安全屋（结算后 gameOver 时用） */
@@ -1009,8 +1055,8 @@ function redrawShelterQuietly() {
 
 /**
  * 黑暗地点断电：身处黑暗地点（isDark 节点）时电量归零 ——
- *   送回【当前区域的 primaryShelter】（darkarea → southpass，不是 home）+ 天数 +1 + 时间归零 + 体力回满，
- *   **电量不回满**（目的地不是 home 节点，所以 settleNight 的回电条件不成立），
+ *   送回【当前节点可达的最近门户（安全屋）】（darkarea 里就是 southpass）+ 天数 +1 + 时间归零 + 体力回满，
+ *   电量是否回满取决于落点：落点是 home 节点才回满（全局规则，落点是别的门户则保持 0），
  *   且**不扣体力上限**（这是与体力归零强制回家的唯一区别），所以不会因此 gameOver。
  *
  * 【与体力归零是两条独立路径】：
@@ -1049,15 +1095,15 @@ function onBatteryCollapse() {
   terminal.clearQueue();
   terminal.log(UI.darkCollapse);
 
-  /* 1 传送回【当前区域】的安全屋：与体力归零 / 天亮强制回家同一条规则（primaryShelterOf）。
-       黑暗地点只在 darkarea 里，所以这里就是 southpass —— 不再写死 home。
-       区域也要跟着换：primaryShelter 一定是本区域的节点（这是数据层的不变式）。 */
+  /* 1 传送回【当前节点可达的最近门户（安全屋）】：与体力归零 / 天亮强制回家同一条规则。
+       黑暗地点只在 darkarea 里，探明图上离它最近的门户就是 southpass。 */
   const area = game.getCurrentArea();
-  const shelterId = primaryShelterOf(area);
+  const shelterId = forceHomeTarget();
   visitNode(area, shelterId);
 
   /* 2 结算：天数 +1、时间归零、体力回满。
-       电量【不回满】：settleNight 的回电条件是「当前节点是 home」，而这里是 southpass。
+       电量回满与否交给 settleNight 的全局规则（落点 === home 才回电）；
+       darkarea 里最近的门户是 southpass，所以正常情况电量保持 0。
        注意这里【没有】setStaminaMax(...)，体力上限一分不扣。
        结算读的就是上面 visitNode 换过之后的当前节点。 */
   settleNight();
@@ -1204,6 +1250,10 @@ const debugContext = {
     return true;
   },
   redrawStatusBar: renderStatusBar,
+  /* /event 走真正的开关接口（state.setEventsEnabled 会一并写 localStorage），
+     并把事件池 id 列表回给 debug.js 显示，便于确认事件系统已生效 */
+  setEventsEnabled: (value) => game.setEventsEnabled(value),
+  eventIds: () => events.listEventIds(),
 };
 
 /* ---------------- 深色模式 ---------------- */
