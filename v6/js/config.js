@@ -27,8 +27,28 @@ export const SHELTER_OVERNIGHT_COST_SEC = 0; /* 安全屋「过夜」耗时（0 
 export const TERMINAL_HISTORY_MAX = 50;    /* 终端历史最多保存条数 */
 export const EVENTS_DEFAULT = false;      /* 随机事件系统默认关闭（测试时用 /event on 打开） */
 export const EVENT_CHANCE = 0.15;         /* 随机事件触发几率：每个触发点掷一次（0.15 = 15%） */
-/* 事件选项按钮上是否用悬浮提示显示该选项的效果（文案在 texts.js 的 EVENTS[id].effects）。
-   默认 false = 不显示，保持探索感；改成 true 就显示。只影响悬浮提示，不影响按钮点击 */
+/* 事件选项按钮上是否用悬浮提示显示该选项的效果（文案在 texts.js 的 EVENTS[id].hoverTexts）。
+   这是**默认值**：运行时状态优先读 localStorage（key 见下），没有才用这个值。
+   /event hover on|off 改的就是运行时状态，改完立刻生效、不用刷新页面 */
 export const EVENT_HOVER_SHOW_EFFECT = false;
-export const GAME_VERSION = 'v1.8.13';     /* 游戏版本号 */
+/** 悬浮开关在 localStorage 里的键（不进存档，只当本地偏好） */
+export const EVENT_HOVER_KEY = 'game_event_hover';
+
+/**
+ * 读取「悬浮显示事件效果」的运行时状态：优先 localStorage，读不出来（没存过 / 隐私模式）就用默认值。
+ * 放在 config.js 是因为默认值与读取口径属于同一件事；
+ * 运行时的写入与查询由 js/events.js 的 setHoverEnabled() / isHoverEnabled() 负责。
+ */
+export function readEventHoverEnabled() {
+  try {
+    const saved = localStorage.getItem(EVENT_HOVER_KEY);
+    if (saved === 'true') return true;
+    if (saved === 'false') return false;
+  } catch (err) {
+    /* 隐私模式 / file:// 下忽略，退回默认值 */
+  }
+  return EVENT_HOVER_SHOW_EFFECT;
+}
+
+export const GAME_VERSION = 'v1.8.14';     /* 游戏版本号 */
 export const DEBUG_CONSOLE = true;       /* 调试指令开关：true 时 "/" 开头的输入交给 js/debug.js */

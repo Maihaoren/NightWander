@@ -4,7 +4,7 @@
  * 仅在 config.DEBUG_CONSOLE === true 时由 main.js 调用（默认关闭，模块加载但不执行）。
  */
 
-import { BATTERY_MAX, STORAGE_CAPACITY, EVENTS_DEFAULT, GAME_VERSION } from './config.js';
+import { BATTERY_MAX, STORAGE_CAPACITY, EVENTS_DEFAULT, GAME_VERSION, DEBUG_CONSOLE } from './config.js';
 
 /** 所有指令名（不带 "/"），供终端 Tab 补全使用 */
 export function getAllCommandNames() {
@@ -27,7 +27,10 @@ const HELP = [
   '/area goto {areaId}  切换到指定区域（优先停在与当前区域的共享节点上）',
   '/storage set {n}     设置「当前节点所在储物箱」的容量（>=0）',
   '/storage add {n}     同上，容量 +n',
-  '/event {on|off|reset}   —— 开关随机事件系统',
+  '/event on|off|reset  开关随机事件系统（reset = 回到默认）',
+  '/event hover [on|off] 选项按钮上是否悬浮显示该选项效果（不带参数 = 看当前状态）',
+  '/event trigger {id}  强制触发指定事件（无视开关与几率，测试入口）',
+  '/event help          列出 /event 的全部用法与所有事件 id',
   '/version               —— 显示当前游戏版本',
   '/help                显示本列表',
 ].join('\n');
@@ -41,7 +44,7 @@ const USAGE = {
   storage: '/storage set {n} 或 /storage add {n}',
   goto: '/goto {nodeId}（/goto help 列出当前区域的节点）',
   area: '/area list 或 /area goto {areaId}',
-  event: '/event {on|off|reset}',   /* 用法提示固定为这一句 */
+  event: '/event {on|off|reset|hover|trigger|help}',   /* 用法提示固定为这一句 */
   version: '/version',
 };
 
@@ -154,16 +157,71 @@ function execute(input, state, ctx) {
     }
 
     case '/event': {
-      /* tokens[1] 是参数（不是 tokens[0]）；大小写无关；state 里没有该字段时以 EVENTS_DEFAULT 兜底 */
+      /* tokens[1] 是子命令（不是 tokens[0]）；大小写无关；state 里没有该字段时以 EVENTS_DEFAULT 兜底 */
       const arg = String(tokens[1] || '').toLowerCase();
       const current = typeof state.eventsEnabled === 'boolean' ? state.eventsEnabled : EVENTS_DEFAULT;
 
+      /* ---- /event help：列出全部用法 + 所有事件 id 与描述（off 时也能用，只走终端输出） ---- */
+      if (arg === 'help') {
+        const rows = (ctx.eventCatalog ? ctx.eventCatalog() : []).map(
+          (e) => `  ${String(e.id).padEnd(12)}${e.desc}（选项：${(e.options || []).join(' / ')}）`,
+        );
+        return [
+          '随机事件系统用法：',
+          '  /event on | off | reset        主开关（reset 回到默认值）',
+          '  /event hover on | hover off | hover   选项效果悬浮提示的开关',
+          '  /event trigger {id}            强制触发一个事件（无视开关与几率）',
+          '  /event help                    本说明',
+          '事件池：',
+          ...rows,
+        ].join('\n');
+      }
+
+      /* ---- /event hover [on|off]：运行时切换悬浮开关（状态存 localStorage，不进存档） ---- */
+      if (arg === 'hover') {
+        const sub2 = String(tokens[2] || '').toLowerCase();
+        const readHover = () => (typeof ctx.isHoverEnabled === 'function' ? ctx.isHoverEnabled() : null);
+        const writeHover = (v) => (typeof ctx.setHoverEnabled === 'function' ? ctx.setHoverEnabled(v) : null);
+
+        if (sub2 === '') {
+          const now = readHover();
+          if (now === null) return '当前环境不支持运行时切换悬浮开关。';
+          return now ? '选项效果悬浮提示：已开启' : '选项效果悬浮提示：已关闭';
+        }
+        if (sub2 !== 'on' && sub2 !== 'off') return `用法：${usage}`;
+        const now = writeHover(sub2 === 'on');
+        if (now === null) return '当前环境不支持运行时切换悬浮开关。';
+        return now
+          ? '选项效果悬浮提示：已开启（鼠标停在选项按钮上会显示该选项的效果）'
+          : '选项效果悬浮提示：已关闭';
+      }
+
+      /* ---- /event trigger {id}：强制触发（无视开关与几率，走与自然触发完全一致的流程） ---- */
+      if (arg === 'trigger') {
+        const id = String(tokens[2] || '');
+        if (!id) return `参数错误。用法：${usage}`;
+
+        const known = (ctx.eventCatalog ? ctx.eventCatalog() : []).some((e) => e.id === id);
+        if (!known) return '未知事件 id，用 /event help 查看';
+        if (typeof ctx.canTriggerEvent === 'function' && !ctx.canTriggerEvent()) {
+          return '当前有弹窗没处理完或正在移动，先处理完再触发。';
+        }
+        if (typeof ctx.triggerEvent !== 'function' || !ctx.triggerEvent(id)) {
+          return '当前无法触发事件。';
+        }
+        /* 调试日志只在 DEBUG_CONSOLE 下输出（本模块本身就只在 DEBUG_CONSOLE 时被 main 调用） */
+        return DEBUG_CONSOLE
+          ? `[debug] 强制触发事件 ${id}`
+          : '已强制触发事件。';
+      }
+
+      /* ---- /event on | off | reset（原逻辑；reset 同时把 hover 开关也拨回默认值） ---- */
       let next;
       if (arg === 'on') next = true;
       else if (arg === 'off') next = false;
       else if (arg === 'reset') next = EVENTS_DEFAULT;
       else if (arg === '') next = !current;                    /* 无参数：切换 */
-      else return '用法：/event {on|off|reset}';
+      else return `用法：${usage}`;
 
       /* 真正开关事件系统：优先走 main 注入的 state.setEventsEnabled（它同时写 localStorage），
          拿不到时才退回直接改 state + 自己写盘。事件池在 js/events.js，掷骰由 main.js 在两处触发点调用 */
@@ -175,7 +233,12 @@ function execute(input, state, ctx) {
 
       const pool = typeof ctx.eventIds === 'function' ? ctx.eventIds() : [];
       const tail = pool.length ? `（事件池 ${pool.length} 个：${pool.join('/')}）` : '';
-      if (arg === 'reset') return `随机事件系统：已重置为默认（${EVENTS_DEFAULT ? '开' : '关'}）${tail}`;
+      if (arg === 'reset') {
+        /* reset 也把 hover 开关拨回 config 里的默认值，并同步 localStorage */
+        if (typeof ctx.resetHoverEnabled === 'function') ctx.resetHoverEnabled();
+        const hoverDefault = typeof ctx.hoverDefault === 'function' ? ctx.hoverDefault() : false;
+        return `随机事件系统：已重置为默认（${EVENTS_DEFAULT ? '开' : '关'}，悬浮提示 ${hoverDefault ? '开' : '关'}）${tail}`;
+      }
       return (next ? '随机事件系统：已开启' : '随机事件系统：已关闭') + tail;
     }
 

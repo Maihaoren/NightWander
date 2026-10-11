@@ -1,17 +1,18 @@
 /**
- * events.js —— 随机事件池（v1.8.13：选择弹窗 + 结果弹窗）
+ * events.js —— 随机事件池（v1.8.14：选择弹窗 + 结果弹窗；终端叙事 / 弹窗效果分工）
  *
- * 只做四件事：定义事件池、掷骰、把「玩家选的选项」执行掉。
+ * 只做四件事：定义事件池、掷骰、把「玩家选的选项」执行掉、维护悬浮开关的运行时状态。
  * 不碰 DOM —— 弹窗由 main.js 调 modal.js 弹，文案全部来自 texts.js 的 EVENTS。
  *
  * 事件结构（EVENT_POOL 的每一项）：
- *   { id, desc, options: [{ label, effect, result, effectText }] }
+ *   { id, desc, options: [{ label, effect, effectText, narrate, hoverText }] }
  *   desc       —— 描述（双出：终端 + 选择弹窗）
- *   label      —— 选项按钮文字（来自 texts.js）
+ *   label      —— 选择弹窗里的选项按钮文字
  *   effect     —— 函数，执行该选项的状态改动；接收 ctx = { node }，
  *                 可返回 { spawned?: 物品名 } 之类的附加信息
- *   result     —— 结果文案（单出：只在结果弹窗里显示，终端不重复）
- *   effectText —— 效果说明，只在 config.EVENT_HOVER_SHOW_EFFECT === true 时当悬浮提示
+ *   effectText —— 结果弹窗文本（系统信息：玩家得失；无效果时为「无变化」）
+ *   narrate    —— 终端文本（描述性叙事）
+ *   hoverText  —— 悬浮提示（只有 hover 开关打开时由 main.js 用作按钮 title）
  *
  * 触发时机（由 main.js 决定，本模块不自己挂时机）：
  *   1) 移动到达节点时掷一次
@@ -23,11 +24,14 @@
  * 玩家在弹窗里选完，main.js 再调 runEventOption() 执行对应 effect。
  */
 
-import { EVENT_CHANCE } from './config.js';
+import { EVENT_CHANCE, EVENT_HOVER_SHOW_EFFECT, EVENT_HOVER_KEY, readEventHoverEnabled } from './config.js';
 import { EVENTS, ITEMS } from './texts.js';
 import { getNode } from './map.js';
 import * as game from './state.js';
 import * as time from './timeSystem.js';
+
+/** 无效果选项在结果弹窗里的兜底文案（texts.js 的 UI.eventNoChange 是同一句话） */
+const EVENT_NO_CHANGE = '无变化';
 
 /**
  * 「刷物品」类选项用的候选表。
@@ -63,7 +67,7 @@ function grantItemToNode(node) {
  */
 const EFFECTS = {
   /* 1) 拾得零钱：A 刷 1 件物品；B 无效果 */
-  coins: [
+  coin_purse: [
     (ctx) => ({ spawned: grantItemToNode(ctx.node) }),
     () => null,
   ],
@@ -94,13 +98,16 @@ const EFFECTS = {
 };
 
 /**
- * 事件池：把 texts.js 的文案与上面的效果拼成 { id, desc, options:[{label,effect}] }。
+ * 事件池：把 texts.js 的文案与上面的效果拼成
+ *   { id, desc, options: [{ label, effect, effectText, narrate, hoverText }] }
  * 加新事件只要在 texts.js 加一条 EVENTS、在这里加一组 EFFECTS。
  *
- * 每个选项额外带两段文案（都来自 texts.js，见那边的说明）：
- *   result     —— 结果文案，只在【结果弹窗】里显示，终端不重复输出
- *   effectText —— 效果说明，只在 config.EVENT_HOVER_SHOW_EFFECT === true 时
- *                 由 main.js 当作按钮的悬浮提示（title）
+ * 五个字段的分工（v1.8.14 起）：
+ *   label     —— 选择弹窗里的按钮文字
+ *   effect    —— 执行状态改动
+ *   effectText—— 【结果弹窗】文本（系统信息：玩家得失，如「体力 -1」；无效果时为「无变化」）
+ *   narrate   —— 【终端】文本（描述性叙事，选完之后补进叙事流）
+ *   hoverText —— 悬浮提示（只有 hover 开关打开时由 main.js 用作按钮 title）
  */
 export const EVENT_POOL = Object.keys(EVENTS).map((id) => {
   const copy = EVENTS[id];
@@ -111,17 +118,52 @@ export const EVENT_POOL = Object.keys(EVENTS).map((id) => {
     options: (copy.options || []).map((label, index) => ({
       label,
       effect: effects[index] || (() => null),
-      result: (copy.results || [])[index] || '',
-      effectText: (copy.effects || [])[index] || '',
+      effectText: (copy.effectTexts || [])[index] || EVENT_NO_CHANGE,
+      narrate: (copy.narrates || [])[index] || '',
+      hoverText: (copy.hoverTexts || [])[index] || '',
     })),
   };
 });
 
 const POOL_BY_ID = new Map(EVENT_POOL.map((e) => [e.id, e]));
 
+/* ---------------- 悬浮显示效果：运行时开关（默认值在 config.js，状态存 localStorage） ---------------- */
+
+let hoverEnabled = readEventHoverEnabled();
+
+/** 当前是否显示「选项效果」的悬浮提示 */
+export function isHoverEnabled() {
+  return hoverEnabled;
+}
+
+/** 改运行时状态并写 localStorage（/event hover on|off 用）；返回改完的值 */
+export function setHoverEnabled(value) {
+  hoverEnabled = Boolean(value);
+  try {
+    localStorage.setItem(EVENT_HOVER_KEY, String(hoverEnabled));
+  } catch (err) {
+    /* 写盘失败不影响本次会话 */
+  }
+  return hoverEnabled;
+}
+
+/** 回到 config 里的默认值，并同步 localStorage（/event reset 用） */
+export function resetHoverEnabled() {
+  return setHoverEnabled(EVENT_HOVER_SHOW_EFFECT);
+}
+
 /** 池里所有事件 id（debug / 测试用） */
 export function listEventIds() {
   return EVENT_POOL.map((e) => e.id);
+}
+
+/** 事件清单（/event help 用）：id + 描述 + 选项文字 */
+export function listEvents() {
+  return EVENT_POOL.map((e) => ({
+    id: e.id,
+    desc: e.desc,
+    options: e.options.map((o) => o.label),
+  }));
 }
 
 /** 按 id 取事件对象（不执行任何效果）；不认识的 id 返回 null */
@@ -159,12 +201,13 @@ export function rollEvent(nodeId = null, rng = Math.random) {
 
 /**
  * 执行玩家选中的那个选项。
- * @param {object} event rollEvent() 返回的事件对象
+ * @param {object} event rollEvent() / getEvent() 返回的事件对象
  * @param {number} index 选项下标（0 / 1）
  * @param {string} [nodeId] 当前节点，默认用 state 里的
- * @returns {{ id:string, index:number, label:string, result:string, spawned:string } | null}
- *   result  —— 结果文案（来自 texts.js，交给结果弹窗显示；终端不重复输出）
- *   spawned —— 刷出来的物品名（没刷则空串）
+ * @returns {{ id:string, index:number, label:string, effectText:string, narrate:string, spawned:string } | null}
+ *   effectText —— 结果弹窗文本（系统信息）
+ *   narrate    —— 终端文本（描述性叙事）
+ *   spawned    —— 刷出来的物品名（没刷则空串；交给原有拾取弹窗处理）
  */
 export function runEventOption(event, index, nodeId = null) {
   if (!event || !Array.isArray(event.options)) return null;
@@ -178,7 +221,8 @@ export function runEventOption(event, index, nodeId = null) {
     id: event.id,
     index: Number(index),
     label: option.label,
-    result: option.result || '',
+    effectText: option.effectText || EVENT_NO_CHANGE,
+    narrate: option.narrate || '',
     spawned: outcome.spawned || '',
   };
 }

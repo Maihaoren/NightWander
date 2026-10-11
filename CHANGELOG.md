@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.8.13` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.8.14` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `3` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -34,6 +34,106 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.8.14] — 2026-10-11 —— 修正事件输出分工 + /event 语法扩展 + 并入 6 条（跨天亮 / 拾取弹窗 / 单事件）
+
+**回档点**：`v1.8.14`
+
+### 修复
+
+**1. 修正事件输出分工：终端 = 叙事流、结果弹窗 = 系统信息（`events.js` + `texts.js` + `main.js`）**
+
+- 症状：v1.8.13 反了 —— 终端打的是「`> 选项名称`」，结果弹窗放的是描述性氛围文案。
+- 新分工（落实要求 1~9）：
+  | 信息 | 终端 | 选择弹窗 | 结果弹窗 |
+  |---|---|---|---|
+  | 事件描述 `desc` | ✅（触发时就打，不等选完） | ✅ | — |
+  | 选项名称 `label` | ❌（**本轮删掉了那行 `> 选项名` 回显**） | ✅（按钮） | — |
+  | 描述性叙事 `narrate` | ✅（选完之后补进叙事流） | — | — |
+  | 效果文本 `effectText` | ❌ | — | ✅（唯一出现处） |
+  | B 类无效果 | narrate 照常进终端 | ✅ | ✅ 显示「无变化」 |
+- 事件 id 按需求改名：`coins` → **`coin_purse`**（其余 `slip` / `vending` / `flicker` / `lost` 不变）。
+- 每个 option 补齐五个字段：`{ label, effect, effectText, narrate, hoverText }`（文案在 `texts.js`，效果在 `events.js` 的 `EFFECTS`，
+  由 `EVENT_POOL` 拼成要求的结构）。10 条 `effectText`、10 条 `narrate`、10 条 `hoverText` 都与需求给的文字逐字一致。
+
+### 新增
+
+**2. `/event` 语法扩展（`debug.js` + `events.js` + `config.js` + `main.js`）**
+
+| 子命令 | 行为 |
+|---|---|
+| `/event on \| off \| reset` | 主开关（逻辑不变）；**reset 现在同时把 hover 开关拨回默认值**并同步 localStorage |
+| `/event hover on \| hover off \| hover` | 运行时切换「选项效果悬浮提示」；不带参数显示当前状态；状态存 localStorage `game_event_hover` |
+| `/event trigger {id}` | 强制触发指定事件：无视主开关与几率、100% 触发、走**与自然触发完全一致**的流程；id 不存在 →「未知事件 id，用 /event help 查看」；有弹窗未处理或正在移动 → 拒绝并提示；gameOver 后拦截（与忙碌判断一起收在 `main.js` 的 `canTriggerEvent()`） |
+| `/event help` | 列出全部用法 + 5 个事件 id、描述与选项；**off 时也能用**；只走终端输出，不弹窗 |
+
+- `EVENT_HOVER_SHOW_EFFECT` 保留为**默认值**；`config.js` 新增读取函数 `readEventHoverEnabled()`：优先读 localStorage，没有/读不出来就用默认值。
+  运行时状态由 `events.js` 的 `isHoverEnabled()` / `setHoverEnabled()` / `resetHoverEnabled()` 维护，`main.js` 在构造选项按钮时用 `events.isHoverEnabled()` 决定 `hint`。
+- debug 日志：`/event trigger` 在 `DEBUG_CONSOLE` 下才输出 `[debug] 强制触发事件 {id}`。
+- 两个开关都**不进存档**：主开关只在 `state`+localStorage（`game_events_enabled`），hover 只在 localStorage（`game_event_hover`）；
+  实测 `toSnapshot()` 里没有任何开关字段。
+
+### 变更
+
+**3. 上轮推荐并入的 6 条**
+
+1. **事件效果造成的时间变化不再触发事件**：掷骰只在两个触发点（`travelTo` 的到达、`onOptionClick` 的时间消耗）里做，
+   `timeSystem.advanceTime()` 里没有任何掷骰调用（原本就如此，本轮补了断言把它钉住）。
+2. **事件效果跨过 06:00 → 事件结算完后补一次天亮**：`main.js` 新增 `suppressNightEnd`，事件流程期间 `onNightEnd()` 只置 `nightEnded` 不处理；
+   流程结束（含结果窗、拾取窗）后再检查一次 `nightEnded`，为真才调 `onNightEnd()` 走天亮流程。
+   否则「时间 +N」会让传送/结算插进弹窗中间。
+3. **事件刷出的物品走 v1.8.3 原有拾取弹窗**：结果窗点「继续」之后调 `pickUpItems(node)`，
+   三个按钮仍是 `[带走拿得下的] [全部放弃] [稍后处理]`，容量不够按原逻辑处理 —— 没有新造拾取流程。
+4. **一次移动最多一个事件**：`main.js` 新增 `eventFiredThisAction` + `beginAction()`（在 `travelTo` 与 `onOptionClick` 开头调用）；
+   `rollRandomEvent()` 见到标记就直接丢弃。这样「走到带 mustResolve 的节点 → 在它的模态里选了耗时选项 → 回到移动流程又掷一次」也不会叠两个事件弹窗。
+5. **两个事件开关不进存档**（同上）。
+6. **trigger 的调试日志只在 `DEBUG_CONSOLE` 下输出**。
+
+### 变更清单
+
+| 文件 | 改动 |
+|---|---|
+| `v6/js/events.js` | `EFFECTS` 的 key 改成 `coin_purse`；`EVENT_POOL` 的每个 option 变成 `{label, effect, effectText, narrate, hoverText}`；`runEventOption()` 返回 `{label, effectText, narrate, spawned}`；新增 `isHoverEnabled()` / `setHoverEnabled()` / `resetHoverEnabled()` / `listEvents()` |
+| `v6/js/texts.js` | `EVENTS` 改为 `{ desc, options, effectTexts, narrates, hoverTexts }` 五栏（10+10+10 条文案按需求逐字落地）；`UI` 新增 `eventNoChange`（「无变化」）、删除不再用的 `eventSpawned` |
+| `v6/js/main.js` | 事件流程拆成 `rollRandomEvent()`（掷骰 + 单事件去重）与 `runEventFlow()`（弹窗流程，自然触发与 trigger 共用）；新增 `beginAction()` / `isFlowBusy()` / `eventFiredThisAction` / `suppressNightEnd`；`onNightEnd()` 加推迟判断；结果窗后接原有拾取弹窗；`debugContext` 增加 `eventCatalog` / `isHoverEnabled` / `setHoverEnabled` / `resetHoverEnabled` / `hoverDefault` / `canTriggerEvent` / `triggerEvent`；config 导入改为 `EVENTS_DEFAULT` + `EVENT_HOVER_SHOW_EFFECT` |
+| `v6/js/debug.js` | `/event` 扩展成 `on\|off\|reset\|hover\|trigger\|help`；`HELP` / `USAGE` 同步；**补上缺失的 `DEBUG_CONSOLE` 导入**（本轮实测踩到的坑，见下） |
+| `v6/js/config.js` | `EVENT_HOVER_SHOW_EFFECT` 注释改为「默认值」；新增 `EVENT_HOVER_KEY = 'game_event_hover'` 与 `readEventHoverEnabled()`；`GAME_VERSION` → `v1.8.14` |
+| `v6/js/timeSystem.js` | **未改动**（改动 3-1 只是把它「不掷事件」这件事钉了断言） |
+| `v6/js/inventory.js` | **未改动**：拾取弹窗的分支逻辑（`listLocalItems` / `planWildPickup`）本来就是现成的，改动 3-3 复用它 |
+| `HANDOFF.md` | 游戏版本同步 `v1.8.14` |
+
+**存档格式**：`VERSION` 仍为 **`3`**，**未变**，旧存档照常加载。
+
+### 验证
+
+- 模块链接检查（11 个模块 OK + `main` 需 DOM）、DOM 桩 `boot()` 无异常、12 个 js 文件 `node --check`。
+- **79 项断言全部通过**（`.tools/nw_r15_check.mjs`，DOM 桩里真跑 `boot()`、真点选项/继续/拾取按钮、真跑 `tick`）：
+  - **结构**：事件 id 五个（含 `coin_purse`）；每个 option 五字段齐全；10 条 `effectText` / 10 条 `narrate` / 10 条 `hoverText` 与需求逐字一致。
+  - **输出分工（端到端）**：选择窗描述 = desc；触发时终端就有 desc；选完后 **终端只多出 narrate**（既没有选项名、也没有效果文本）；结果窗 desc = effectText、标题「结果」、只有一个「继续」；
+    **点「继续」后因为刷出了物品，接着弹出原有拾取窗**（标题「发现物品」、三个按钮与 v1.8.3 一致）；拾取窗期间仍暂停；整段结束才恢复时间 / 解锁终端。
+  - **B 类无效果**：终端出 `narrates[1]`、结果窗出「无变化」、无状态改动。
+  - **`/event`**：help 列出四个子命令 + 5 个事件 id/描述，且 off 时可用；hover 查询/on/off、写盘 key 与运行时状态即时生效；`readEventHoverEnabled()` 优先读 localStorage、无值时回默认；
+    reset 同时复位主开关与 hover 并同步 localStorage；trigger 无视开关、未知 id 提示、忙碌拒绝、`[debug]` 前缀只在 DEBUG_CONSOLE 下；
+    trigger 与自然触发调用的是**同一个** `runEventFlow()`，且 triggerEvent 里没有任何时间/体力/电量消耗。
+  - **改动 3**：`advanceTime` 无掷骰、掷骰只在两个触发点；**实测效果把时间推过 06:00** —— 结果窗照常先出、当时仍在原节点，点「继续」之后才天数 +1、时间归零、被送回安全屋；
+    事件刷物品确实调 `pickUpItems()`（全项目只有一处弹拾取窗）；**实测一次动作两个触发源都命中时，只有先命中的那一个出事件**（事件描述在终端只出现 1 次、没有第二个弹窗）；
+    存档快照里没有开关字段；`[debug]` 日志条件化。
+- 旧套件回归：v1.8.6 ~ v1.8.13 全部通过。其中两个套件的**事件相关段落**按本轮改写做了裁剪并在注释里写明去向：
+  `nw_r13`（v1.8.12 的「弹窗化 + 悬浮开关」）与 `nw_r14`（v1.8.13 的「结果弹窗 + 去重 + 悬浮开关」）里的事件断言已整体由 `nw_r15` 覆盖；
+  `nw_r14_hover`（副本里把开关改成 true 的那个）改成读 `hoverText` 与新 id。
+- **本轮实测暴露并修掉一个真实缺陷**：`debug.js` 里用了 `DEBUG_CONSOLE` 却没从 `config.js` 导入，
+  `/event trigger {id}` 一执行就 `ReferenceError` → 已补上导入（断言里加了一条防回归）。
+
+### 已知限制 / 遗留
+
+- `/event trigger` 只能通过终端敲指令触发，**没有 UI 入口**；它刻意无视 `on|off` 与几率，属于测试/调试口子。
+- `hoverText` 里的文字（如「查看：当前节点获得 1 件物品」）按需求**带着动作前缀**整句写死，所以按钮悬浮提示会重复一遍选项名；
+  若想去掉前缀，改 `texts.js` 的 `hoverTexts` 即可。
+- hover 开关是「本地偏好」：不进存档，但会跟着浏览器 localStorage 一直留着，换浏览器/清缓存就回到默认 `false`。
+- 事件流程与 `mustResolve` 弹窗串联时，是先弹 `mustResolve`（玩家必须选一个）再弹事件窗 —— 两者严格首尾相接，不会同时存在。
+- 预先存在、本轮**未处理**：`m1`（枯树林）的 ASCII 图是 11 行，与项目「12 行」约定不符。
 
 ---
 

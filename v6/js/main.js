@@ -6,7 +6,7 @@
 
 import {
   STAMINA_MIN, BATTERY_MAX, FORCE_HOME_PENALTY, MOVE_STAMINA_COST, TICK_INTERVAL_MS, DEBUG_CONSOLE,
-  SHELTER_OVERNIGHT_COST_SEC, EVENT_HOVER_SHOW_EFFECT,
+  SHELTER_OVERNIGHT_COST_SEC, EVENTS_DEFAULT, EVENT_HOVER_SHOW_EFFECT,
 } from './config.js';
 import { UI, SCENES, ITEMS } from './texts.js';
 import {
@@ -510,6 +510,7 @@ function refreshButtons() {
 
 async function travelTo(id) {
   if (game.isGameOver()) return;                     /* 0 */
+  beginAction();                                     /* 这一次移动最多出一个事件 */
   const area = game.getCurrentArea();
   const node = getNode(id);
   if (!node) return;
@@ -906,77 +907,120 @@ async function withTimePaused(run) {
 
 /* ---------------- 随机事件（触发点在 main，池与效果在 events.js） ---------------- */
 
+let eventFiredThisAction = false;   /* 一次玩家动作（一次移动 / 一次选项）最多出一个事件 */
+let suppressNightEnd = false;       /* 事件流程期间：把「跨过 06:00」推迟到流程结束再处理 */
+
+/** 每次玩家动作开始时调用：允许这一次动作再出一个事件 */
+function beginAction() {
+  eventFiredThisAction = false;
+}
+
+/** 当前是否有未处理完的流程（开着的弹窗 / 正在移动）—— /event trigger 用它拒绝触发 */
+function isFlowBusy() {
+  return modal.isModalOpen() || modalDepth > 0 || pendingMove !== null;
+}
+
 /**
- * 在某个触发点掷一次随机事件。
- *
- * 流程（**整段共用一个 withTimePaused**，所以从弹出选择窗到结果窗关掉，时间一直暂停、终端一直锁输入）：
- *   1. 命中 → 先把【描述】打到终端（保留叙事流历史），紧接着弹选择窗，选择窗里也显示同一段描述 —— 描述的「双出」
- *   2. 选一个选项（只有选项按钮、没有底部按钮、点遮罩不关闭 → 必须选）
- *   3. **先执行 effect**，再弹【结果窗】：只有结果文案 + 一个「继续」按钮
- *   4. 点「继续」→ 关窗 → 整段结束，时间恢复、终端解锁
- *
- * 输出去重：描述双出（终端 + 选择窗）；结果文案只出现在结果窗里（终端不再重复），
- * 终端只额外留一行「> 选项文字」作为玩家操作的记录（与其它选项的回显一致）。
- *
+ * 在某个触发点掷一次随机事件（自然触发：受 /event 开关与几率控制）。
+ * 一次动作里已经出过事件就丢弃，避免「移动到达 + 消耗时间」两个触发源叠弹窗。
  * 系统关着 / 没命中 / 游戏结束都返回 null，什么都不做。
  */
 async function rollRandomEvent(nodeId = null) {
+  if (eventFiredThisAction) return null;             /* 先命中先算，另一个丢弃 */
   const event = events.rollEvent(nodeId);
   if (!event) return null;
+  return runEventFlow(event, nodeId);
+}
 
-  /* 规则 1：描述双出。时机在弹选择窗【之前】，不等玩家选完
-     （map-modal 只盖地图区，终端那条会照常排进输出里） */
-  terminal.log(event.desc);
+/**
+ * 事件主流程 —— 自然触发与 /event trigger 走的是同一条：
+ *
+ *   1. 命中 → 先把【描述】打到终端（叙事流），紧接着弹选择窗，选择窗里也显示同一段描述（描述的「双出」）
+ *   2. 选一个选项（只有选项按钮、没有底部按钮、点遮罩不关闭 → 必须选）
+ *   3. **先执行 effect** → 终端输出该选项的 narrate（描述性叙事）→ 弹【结果窗】显示 effectText（系统信息）
+ *   4. 点「继续」→ 关窗；若效果刷出了物品，接着走【原有拾取弹窗】
+ *   5. 整段结束：时间恢复、终端解锁；若期间跨过了 06:00，这时才补一次天亮流程
+ *
+ * 输出分工（v1.8.14）：终端 = 叙事流（desc + narrate，不输出选项名、不输出效果文本）；
+ * 结果弹窗 = 系统信息（effectText，无效果时为「无变化」）。
+ * 整段共用一个 withTimePaused：从选择窗弹出到结果窗关掉，时间一直暂停、终端一直锁输入。
+ *
+ * @returns {Promise<{id:string, index:number}|null>}
+ */
+async function runEventFlow(event, nodeId = null) {
+  if (!event) return null;
+  eventFiredThisAction = true;
+  let chosenIndex = -1;
 
-  return withTimePaused(async () => {
-    const picked = await modal.showModal({
-      title: UI.eventTitle,
-      desc: event.desc,
-      /* 两个选项做成 items：只有它们能 resolve，所以必须选一个才能继续。
-         悬浮提示只在 config.EVENT_HOVER_SHOW_EFFECT === true 时带上（modal 会写成 button.title） */
-      items: event.options.map((option, index) => ({
-        id: index,
-        text: option.label,
-        hint: EVENT_HOVER_SHOW_EFFECT ? option.effectText : '',
-      })),
-      actions: [],                                   /* 没有底部按钮：不能跳过、不能直接关闭 */
+  terminal.log(event.desc);                          /* 规则 1：描述双出（弹窗之前/同时，不等选完） */
+
+  suppressNightEnd = true;                           /* 改动 3-2：事件期间先不让天亮打断流程 */
+  try {
+    await withTimePaused(async () => {
+      const picked = await modal.showModal({
+        title: UI.eventTitle,
+        desc: event.desc,
+        /* 两个选项做成 items：只有它们能 resolve，所以必须选一个才能继续。
+           悬浮提示只在 hover 开关打开时带上（modal 会写成 button.title） */
+        items: event.options.map((option, index) => ({
+          id: index,
+          text: option.label,
+          hint: events.isHoverEnabled() ? option.hoverText : '',
+        })),
+        actions: [],                                 /* 没有底部按钮：不能跳过、不能直接关闭 */
+      });
+
+      if (!picked || picked.type !== 'item') return;      /* 理论上不会发生（没有别的关闭途径） */
+
+      const index = Number(picked.id);
+      const option = event.options[index];
+      if (!option) return;
+      chosenIndex = index;
+
+      /* 先执行效果；效果里的时间推进不会触发新事件（掷骰只在两个触发点里做） */
+      const outcome = events.runEventOption(event, index, nodeId) || {};
+
+      /* 终端 = 叙事流：只补描述性文本，不输出选项名、也不输出效果文本 */
+      if (outcome.narrate) terminal.log(outcome.narrate);
+
+      /* 效果可能改了体力 / 电量 / 时间 / 节点物品池，先重绘一次再弹结果窗 */
+      onBatteryCollapse();                           /* 电量被用干、人又在黑暗地点 → 走断电回家 */
+      renderStatusBar();
+      renderInventory();
+      refreshMap({ current: game.getCurrentNode() });
+
+      /* 结果窗 = 系统信息：只有 effectText + 一个「继续」按钮 */
+      await modal.showModal({
+        title: UI.eventResultTitle,
+        desc: outcome.effectText,
+        items: [],
+        actions: [{ text: UI.eventContinue, value: 'continue' }],
+      });
+
+      /* 刷出物品时走 v1.8.3 原有的拾取弹窗（[带走拿得下的] [全部放弃] [稍后处理]），不新造流程 */
+      if (outcome.spawned) {
+        const node = getNode(game.getCurrentNode());
+        if (node) await pickUpItems(node);
+      }
     });
+  } finally {
+    suppressNightEnd = false;
+  }
 
-    if (!picked || picked.type !== 'item') return null;   /* 理论上不会发生（没有别的关闭途径） */
-
-    const index = Number(picked.id);
-    const option = event.options[index];
-    if (!option) return null;
-
-    /* 规则 2：先执行效果 */
-    const outcome = events.runEventOption(event, index, nodeId) || {};
-    terminal.log(UI.echo(option.label));               /* 玩家操作的记录（与其它选项回显一致） */
-
-    /* 效果可能改了体力 / 电量 / 时间 / 节点物品池，先重绘一次再弹结果窗 */
-    onBatteryCollapse();                               /* 电量被用干、人又在黑暗地点 → 走断电回家 */
-    renderStatusBar();
-    renderInventory();
-    refreshMap({ current: game.getCurrentNode() });
-
-    /* 规则 3：结果文案单出 —— 只进结果窗，终端不重复。
-       刷出物品时把物品名并进同一条（同一处显示，不另开一行） */
-    const resultLines = [outcome.result, outcome.spawned ? UI.eventSpawned(outcome.spawned) : '']
-      .filter(Boolean);
-    await modal.showModal({
-      title: UI.eventResultTitle,
-      desc: resultLines.join(' '),
-      items: [],
-      actions: [{ text: UI.eventContinue, value: 'continue' }],   /* 只有一个按钮 */
-    });
-
-    return { id: event.id, index };
-  });
+  /* 改动 3-2：事件结算完后检查一次时间；效果把时间推过了 06:00 就在这里补一次天亮流程。
+     顺序上晚于两个弹窗，所以不会在弹窗中间插入传送/结算。 */
+  if (nightEnded) {
+    nightEnded = false;
+    onNightEnd();
+  }
+  return { id: event.id, index: chosenIndex };
 }
 
 /* ---------------- 选项执行 ---------------- */
 
 async function onOptionClick(index) {
   if (game.isGameOver()) return;                     /* 0 */
+  beginAction();                                     /* 这一次选项最多出一个事件 */
 
   const area = game.getCurrentArea();
   const node = getNode(game.getCurrentNode());
@@ -1058,6 +1102,12 @@ function handleCommand(input) {
 function onNightEnd() {
   nightEnded = true;
   if (game.isGameOver()) return;
+
+  /* 事件流程期间先不处理：事件效果的「时间 +N」可能正好跨过 06:00，
+     这时候弹窗还没关，直接传送/结算会插进事件流程中间。
+     suppressNightEnd 只把这一段推迟，nightEnded 已经置上；
+     事件结算完由 runEventFlow 收尾时再调一次本函数（改动 3-2）。 */
+  if (suppressNightEnd) return;
 
   /* 天亮：不在安全屋就先按区域送回去（onForceHome('night') 内部同样是「先传送再结算」）；
      已经在安全屋就原地不动。两条分支都收在 settleNight() 上 —— 与「主动过夜」是同一套结算，
@@ -1336,6 +1386,22 @@ const debugContext = {
      并把事件池 id 列表回给 debug.js 显示，便于确认事件系统已生效 */
   setEventsEnabled: (value) => game.setEventsEnabled(value),
   eventIds: () => events.listEventIds(),
+  /* /event help / trigger 用：事件清单（id + 描述 + 选项）、悬浮开关、强制触发入口 */
+  eventCatalog: () => events.listEvents(),
+  isHoverEnabled: () => events.isHoverEnabled(),
+  setHoverEnabled: (value) => events.setHoverEnabled(value),
+  resetHoverEnabled: () => events.resetHoverEnabled(),
+  hoverDefault: () => EVENT_HOVER_SHOW_EFFECT,
+  eventSwitchDefault: () => EVENTS_DEFAULT,
+  /** /event trigger 前的准入检查：游戏结束 / 有弹窗没处理 / 正在移动 都拒绝 */
+  canTriggerEvent: () => !game.isGameOver() && !isFlowBusy(),
+  /** 强制触发（无视开关与几率，DEBUG_CONSOLE 下才有入口）；走与自然触发完全一致的事件流程 */
+  triggerEvent: (id) => {
+    const event = events.getEvent(id);
+    if (!event) return false;
+    runEventFlow(event);                      /* 不 await：debug 指令是同步返回字符串的 */
+    return true;
+  },
 };
 
 /* ---------------- 深色模式 ---------------- */
