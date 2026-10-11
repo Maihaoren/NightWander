@@ -8,7 +8,7 @@ import {
   STAMINA_MIN, BATTERY_MAX, FORCE_HOME_PENALTY, MOVE_STAMINA_COST, TICK_INTERVAL_MS, DEBUG_CONSOLE,
   SHELTER_OVERNIGHT_COST_SEC, EVENTS_DEFAULT, EVENT_HOVER_SHOW_EFFECT,
 } from './config.js';
-import { UI, ITEMS, DOCUMENTS } from './texts.js';
+import { UI, ITEMS, DOCUMENTS, EXCHANGES } from './texts.js';
 import {
   initMap, refreshMap, setMapView, getNode, getNodes, getRegion, getNodeIds,
   isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
@@ -37,6 +37,15 @@ const THEME_KEY = 'nightwander:theme';
  * 这里不再有 GOAL2_ID —— 终局（灯塔）等 b4 把码头落地后再接上。
  */
 const RECHARGE_NODE = HOME_ID;
+
+/**
+ * 发电厂（v1.9.0b2 改动 3）：在这里过夜不是回满，而是把「上限的 30%」加到当前电量上，
+ * 加完 clamp 到上限（setBattery 自己会夹）。
+ *   40% 过夜 → 70%；90% 过夜 → 120% 被夹成 100%（b2 的上限还是常量 BATTERY_MAX = 100）。
+ * 等 c 块把上限做成可变（电容器），只把 BATTERY_MAX 换成「当前上限」即可。
+ */
+const POWERPLANT_ID = 'powerplant';
+const POWERPLANT_RECHARGE_RATIO = 0.30;
 
 let nightEnded = false;      /* 本轮移动/选项期间是否刚好天亮了 */
 let batteryCollapsed = false;/* 本轮移动/选项期间是否触发了「黑暗地点断电回家」 */
@@ -482,8 +491,87 @@ const SHELTER_OPTIONS = [
  */
 const OPTION_HANDLERS = {};
 
+/* ===============================================================
+   地点资源交换（v1.9.0b2 改动 2）
+   ---------------------------------------------------------------
+   给「没有物品奖励」的地点补的交互：点地点选项 → 弹窗（形式与随机事件弹窗一致）
+   → 「执行」才真正结算，「算了」什么都不做、选项也不算用掉。
+   分配表在 map.js 的 EXCHANGE_BY_NODE；文案在 texts.js 的 EXCHANGES。
+   这里只放【数值效果】：正数表示那一项增加。
+     seconds —— 先推进的游戏内秒数（只有 时间↔资源 这一档才有）
+     stamina / battery —— 体力 / 电量增减
+     spawn   —— 执行后在当前节点刷出来的物品 id（走既有拾取弹窗）
+   =============================================================== */
+const EXCHANGE_EFFECTS = {
+  /* 时间 ↔ 资源 */
+  x_nap: { seconds: 600, stamina: +2 },
+  x_rest: { seconds: 300, stamina: +1 },
+  x_power: { seconds: 180, battery: +5 },
+  x_ration: { seconds: 300, stamina: +1, battery: -3 },
+  x_cell: { seconds: 420, battery: +8 },
+  x_scav: { seconds: 300, spawn: 'cannedfood' },
+  /* 资源 ↔ 资源（不涉及时间） */
+  x_e2s: { battery: -5, stamina: +1 },
+  x_s2e: { stamina: -1, battery: +8 },
+  x_e2i: { battery: -3, spawn: 'cannedfood' },
+};
+
+/** 把一件东西放进当前节点的物品池，并解除「已拾取」标记（否则躺在脚下也捡不起来） */
+function spawnItemOnNode(node, itemId) {
+  if (!node || !itemId || !ITEMS[itemId]) return false;
+  if (node.items.includes(itemId)) return false;
+  node.items.push(itemId);
+  game.unmarkItemCollected(itemId);
+  return true;
+}
+
+/**
+ * 资源交换的选项 handler（kind === 'exchange'）。
+ *
+ * 【once 语义】点这个选项只是「打开弹窗」，所以 onOptionClick 不为它打「已用过」标记；
+ *   只有玩家在弹窗里选了「执行」，这里才 markOptionUsed → 用完按钮就消失。
+ *   选「算了」不打标，选项保留、下次还能点。
+ *
+ * 【不触发随机事件】选项自身的 timeCost 是 0，所以 onOptionClick 末尾那条
+ *   「耗时后掷一次」不会执行；时间推进发生在「执行」之后的 effect 里。
+ *
+ * 【顺序】按需求：先关弹窗，再执行 effect，再往终端输出描述性文本。
+ */
+async function exchangeAtNode(option, node) {
+  const ex = EXCHANGES[option.exchange];
+  const fx = EXCHANGE_EFFECTS[option.exchange];
+  if (!ex || !fx) return;
+
+  /* 弹窗期间暂停时间（与 mustResolve / 拾取 / 事件弹窗同一套 withTimePaused） */
+  const picked = await withTimePaused(() => modal.showModal({
+    title: UI.exchangeTitle,
+    desc: ex.desc,
+    items: [{ id: 'exec', text: UI.exchangeExec }, { id: 'cancel', text: UI.exchangeCancel }],
+    actions: [],                                    /* 没有底部按钮：必须从两项里选一个 */
+  }));
+
+  if (!picked || picked.type !== 'item' || picked.id !== 'exec') return;   /* 算了 / 被关掉 */
+
+  /* 「执行」才算用掉这个选项 */
+  game.markOptionUsed(node.id, option.fullIndex);
+
+  if (fx.seconds) time.advanceTime(fx.seconds);
+  if (fx.stamina) game.spendStamina(-fx.stamina);     /* 取负：正数表示加体力，spendStamina 自带上限夹取 */
+  if (fx.battery) game.spendBattery(-fx.battery);     /* 取负：正数表示加电量，setBattery 夹在 [0, 上限] */
+  if (fx.spawn) spawnItemOnNode(node, fx.spawn);
+
+  terminal.log(ex.narrate);
+
+  /* 刷出物品时走 v1.8.3 原有的拾取弹窗，不新造流程（与事件刷物品一致） */
+  if (fx.spawn) await pickUpItems(node);
+}
+
 /* 按 option.kind 挂 handler：安全屋选项是运行时生成的，用序号会随插队错位 */
-const KIND_HANDLERS = { overnight: overnightAtShelter, stay: stayAtShelter };
+const KIND_HANDLERS = {
+  overnight: overnightAtShelter,
+  stay: stayAtShelter,
+  exchange: exchangeAtNode,
+};
 
 function buildOptions(node) {
   const table = OPTION_HANDLERS[node.id] || {};
@@ -720,9 +808,14 @@ async function switchArea(areaId) {
 
 /** 安全屋过夜：走与回家同一套结算流程，之后重新打印一次到达 */
 async function overnightAtShelter() {
+  const here = game.getCurrentNode();
   settleNight();
   const node = getNode(game.getCurrentArea(), game.getCurrentNode());
   if (node) await arriveAt(node);
+  /* 发电厂专属那句要放在 arriveAt 【之后】：arriveAt 开头会 terminal.clearQueue()，
+     排在它前面会被连排队一起清掉，玩家根本看不到。
+     数值规则在 settleNight，这里只是氛围 + 说明「在这儿充上电了」。 */
+  if (here === POWERPLANT_ID) terminal.log(UI.powerplantOvernight);
 }
 
 function stayAtShelter() {
@@ -1064,7 +1157,12 @@ async function onOptionClick(index) {
   if (!batteryCollapsed) onBatteryCollapse();
 
   terminal.log(UI.echo(option.text));                                      /* 回看：> 选项文本 */
-  game.markOptionUsed(node.id, option.fullIndex, option.perDay === true);  /* 3 */
+  /* 3 打「已用过」标记。
+     v1.9.0b2：资源交换选项例外 —— 点它只是打开弹窗，只有玩家选了「执行」才算用掉
+     （选「算了」要保留），所以交给 exchangeAtNode 在确认执行后自己打标。 */
+  if (option.kind !== 'exchange') {
+    game.markOptionUsed(node.id, option.fullIndex, option.perDay === true);
+  }
   game.markGroupUsed(node.id, option.group);
 
   /* mustResolve：做出任意一次选择即视为解除 */
@@ -1279,20 +1377,28 @@ function onBatteryCollapse() {
 /**
  * 结算流程：主动过夜 / 06:00 天亮 / 黑暗断电 / 体力归零 共用。
  * 这是修改 state.day 的唯一游戏逻辑位置（main.js / settleNight）。
- * 不论从哪条路径进来，回电条件都只看【结算时的当前节点是不是 home】，
+ * 不论从哪条路径进来，回电规则都只看【结算时的当前节点】：
+ *   === RECHARGE_NODE（家）    → 电量回满
+ *   === POWERPLANT_ID（发电厂）→ 电量 += 上限 × 30%（v1.9.0b2 改动 3，加完 clamp）
+ *   其余安全屋（墙门 / 北关 / 东关 / 南关 / 码头关）→ 不回电
  * 所以「先传送 → 后结算」定下来之后，各条路径的回电行为自然一致。
  */
 function settleNight() {
   game.setDay(game.getDay() + 1);        /* 1 */
-  /* 1.5 跨天一次性扣电：必须在「回家回电」之前，
-         这样在家过夜才是满电开局，在灯塔 / 北关口 / 南关口过夜才会真扣掉这 5% */
+  /* 1.5 跨天一次性扣电：必须在「回电」之前，
+         这样在家过夜才是满电开局，在别的安全屋过夜才会真扣掉这 5%
+         （发电厂也一样先扣 5% 再加 30%，顺序按现有结算流程，本块不改电量流逝逻辑） */
   time.drainBatteryOnDayChange();
   game.setElapsedSeconds(0);             /* 2 */
   game.setStamina(game.getStaminaMax()); /* 3 */
-  /* 4 只有【家节点】回电：墙门 / 北关 / 东关 / 南关这些接口安全屋过夜不回电。
-       按节点判断，不管从哪个区域走到 home 都算在家。
-       黑暗断电送的落点是接口节点，所以那条路径不回电。 */
-  if (game.getCurrentNode() === RECHARGE_NODE) game.setBattery(BATTERY_MAX);
+  /* 4 回电：按节点判断，与区域无关。
+       家在「废城」，发电厂在「工业区」；两者都不是按区域写死的。 */
+  const hereNode = game.getCurrentNode();
+  if (hereNode === RECHARGE_NODE) {
+    game.setBattery(BATTERY_MAX);
+  } else if (hereNode === POWERPLANT_ID) {
+    game.setBattery(game.getBattery() + BATTERY_MAX * POWERPLANT_RECHARGE_RATIO);
+  }
   game.clearPerDayOptions();             /* 5 清空 perDay 已用项 */
   time.resetClock();                     /* 时间回到 20:00:00 */
   time.startClock(onNightEnd);           /* 夜晚结束时时钟被停过，这里重新驱动 */

@@ -48,10 +48,15 @@
 
   --font-ui: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   --font-mono: ui-monospace, Consolas, "Cascadia Mono", "DejaVu Sans Mono", "Courier New", monospace;
-  --fs-title: 13px;
-  --fs-body: 14px;
-  --fs-term: 13px;
-  --fs-status: 13px;
+  /* v1.9.0b2 改动 1：物品栏与终端字体 +20%~25%。
+     字号变量只有【这一套】（:root），深色主题块（html[data-theme="dark"]）里只有颜色、
+     没有字号 —— 所以「两套变量都要改」在这里不适用：字号本来就是主题无关的，
+     两套主题共用这一份。 */
+  --fs-title: 16px;                       /* 13 → 16（面板标题 / 物品栏容量数字 / 主题按钮） */
+  --fs-body: 17px;                        /* 14 → 17（物品栏正文） */
+  --fs-term: 16px;                        /* 13 → 16（终端日志 / 选项按钮 / 输入框 / 物品名按钮） */
+  --fs-status: 13px;                      /* 状态栏没在本次范围内，保持原值（避免挤爆定高状态栏） */
+  --fs-inv-label: 15px;                   /* 新增：物品栏分区标题 / 空提示（原来写死 12px） */
   --fs-node: 26px;
   --fs-region: 24px;                      /* 大地图上的区域名 */
   --fs-mapnote: 11px;                     /* 「你在这里」小字 */
@@ -505,7 +510,7 @@ body {
 .inv-section + .inv-section { margin-top: var(--pad); }
 
 .inv-section__title {
-  font-size: 12px;
+  font-size: var(--fs-inv-label);          /* v1.9.0b2：原来写死 12px，现在 15px */
   font-weight: 700;
   color: var(--muted);
   margin-bottom: 4px;
@@ -514,7 +519,7 @@ body {
 }
 
 .inv-section__empty {
-  font-size: 12px;
+  font-size: var(--fs-inv-label);
   color: var(--muted);
 }
 
@@ -824,9 +829,11 @@ body {
     --gap: 6px;
     --pad: 6px;
     --status-h: 34px;
-    --fs-body: 13px;
-    --fs-term: 12px;
-    --fs-title: 12px;
+    /* v1.9.0b2：小屏这一套也跟着放大，保持与桌面同等的相对比例 */
+    --fs-body: 15px;
+    --fs-term: 14px;
+    --fs-title: 14px;
+    --fs-inv-label: 13px;
     --fs-node: 20px;
   }
 }

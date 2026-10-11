@@ -20,7 +20,7 @@
  * 本模块不判断游戏规则，不操作终端。
  */
 
-import { SCENES, UI } from './texts.js';
+import { SCENES, UI, EXCHANGES } from './texts.js';
 import { DEFAULT_TRAVEL_COST, DISTANCE_TO_TIME_RATIO, SECONDARY_ROAD_PENALTY } from './config.js';
 import * as game from './state.js';
 import { formatDuration, formatClock } from './timeSystem.js';
@@ -123,7 +123,75 @@ export const NODES = {
   substation: defNode('substation', 540, 520, []),
   dump: defNode('dump', 520, 400, []),
   mall: defNode('mall', 470, 300, []),
+
+  /* ---- 工业区 industry（v1.9.0b2 落地，15 个） ---- */
+  powerplant: defNode('powerplant', 500, 540, []),         /* 共享：工业区 ↔ 孤岛；在这里过夜会充一部分电 */
+  steelmill: defNode('steelmill', 740, 265, []),
+  chimney: defNode('chimney', 185, 360, []),
+  freight: defNode('freight', 640, 150, ['cannedfood']),
+  oiltank: defNode('oiltank', 240, 245, []),
+  railway: defNode('railway', 360, 150, ['ironkey']),
+  coolingtower: defNode('coolingtower', 300, 465, []),
+  boilerroom: defNode('boilerroom', 870, 195, []),
+  pipezone: defNode('pipezone', 865, 345, []),
+  assembly: defNode('assembly', 630, 385, []),
+  lab: defNode('lab', 395, 285, ['capacitor']),
+  canteen: defNode('canteen', 490, 185, ['cannedfood']),
+  materialyard: defNode('materialyard', 860, 105, []),
+  wastewater: defNode('wastewater', 145, 480, []),
+
+  /* ---- 东海岸 coast（v1.9.0b2 落地，10 个） ---- */
+  dockgate: defNode('dockgate', 940, 300, []),             /* 共享：东海岸 ↔ 码头（码头 b4 落地） */
+  beach: defNode('beach', 350, 160, []),
+  breakwater: defNode('breakwater', 520, 140, []),
+  fishingvillage: defNode('fishingvillage', 210, 420, ['cannedfood']),
+  rockybeach: defNode('rockybeach', 370, 470, []),
+  seacave: defNode('seacave', 540, 490, ['ferrykey']),
+  shipyard: defNode('shipyard', 720, 440, ['charger']),
+  observationdeck: defNode('observationdeck', 700, 180, []),
+  coastalroad: defNode('coastalroad', 200, 200, []),
 };
+
+/* ===============================================================
+   1.5 地点资源交换的分配（v1.9.0b2 改动 2）
+   ---------------------------------------------------------------
+   只发给「没有物品奖励」的地点。比例：2/5 时间↔资源、1/5 资源↔资源、2/5 无交互。
+   b2 的两个新区域里，「专属节点中没有物品」的一共 14 个：
+     2/5 × 14 = 5.6 → 6   （时间 ↔ 资源）
+     1/5 × 14 = 2.8 → 3   （资源 ↔ 资源）
+     2/5 × 14 = 5.6 → 5   （无交互）
+   6 + 3 + 5 = 14，差的 2 个按需求「允许 ±1 浮动」补到了时间侧与资源侧。
+   挂上去的选项：once（用过消失）；kind='exchange' 让 main.js 走弹窗流程，
+   option.exchange 是 EXCHANGES / main.js 的 EXCHANGE_EFFECTS 的键。
+   =============================================================== */
+const EXCHANGE_BY_NODE = {
+  /* 时间 ↔ 资源 ×6 */
+  boilerroom: 'x_nap',
+  oiltank: 'x_rest',
+  assembly: 'x_power',
+  breakwater: 'x_ration',
+  pipezone: 'x_cell',
+  coastalroad: 'x_scav',
+  /* 资源 ↔ 资源 ×3（工业区「剩下的那个物品候选」materialyard 也在其中） */
+  materialyard: 'x_e2s',
+  beach: 'x_s2e',
+  observationdeck: 'x_e2i',
+};
+
+/* 把交换入口挂成地点的选项：放在区域表之前，保证 NODES 建好就能用。
+   文案取自 texts.js 的 EXCHANGES.button；数值效果一律不写在这里。 */
+for (const [nodeId, exchangeId] of Object.entries(EXCHANGE_BY_NODE)) {
+  const node = NODES[nodeId];
+  const ex = EXCHANGES[exchangeId];
+  if (!node || !ex) continue;
+  node.options.push({
+    text: ex.button,
+    kind: 'exchange',
+    exchange: exchangeId,
+    timeCost: 0,          /* 时间代价在 EXCHANGE_EFFECTS 里（这样它不会触发「耗时后掷事件」） */
+    batteryCost: 0,
+  });
+}
 
 /* ===============================================================
    2. 区域字典（nodes 是 id 数组）—— v1.9.0b1 共 7 个
@@ -239,12 +307,47 @@ export const REGIONS = {
     id: 'industry',
     name: '工业区',
     type: 'region',
-    placeholder: true,
-    nodes: ['southgate'],               /* 只有接口节点，内部节点等 b2 */
-    edges: [],
-    mainRoads: [],
-    neighbors: ['wasteland'],
-    primaryShelter: null,
+    /* v1.9.0b2 落地：southgate + powerplant 两个共享接口 + 13 个专属节点 = 15 */
+    nodes: ['southgate', 'powerplant',
+      'freight', 'steelmill', 'assembly', 'railway', 'oiltank', 'chimney', 'coolingtower',
+      'boilerroom', 'pipezone', 'canteen', 'lab', 'materialyard', 'wastewater'],
+    /* 主干道「比较复杂」：两条主链 + 三条支线 + 一条互连边，含环路。
+       基准拓扑按需求逐条落地；materialyard ↔ wastewater 是需求给的互连边，
+       另外补了 steelmill → materialyard 与 coolingtower → wastewater 两条，把这一对接进主链
+       （需求要求「至少一条边接入」，补两条是为了两边都接上、顺便形成环路）。 */
+    edges: [
+      /* 主链一（东侧）：南关 → 货运站 → 炼钢炉 → 装配车间 → 发电厂 */
+      { from: 'southgate', to: 'freight' },
+      { from: 'freight', to: 'steelmill' },
+      { from: 'steelmill', to: 'assembly' },
+      { from: 'assembly', to: 'powerplant' },
+      /* 主链二（西侧）：南关 → 铁轨 → 储油罐 → 烟囱 → 冷却塔 → 发电厂 */
+      { from: 'southgate', to: 'railway' },
+      { from: 'railway', to: 'oiltank' },
+      { from: 'oiltank', to: 'chimney' },
+      { from: 'chimney', to: 'coolingtower' },
+      { from: 'coolingtower', to: 'powerplant' },
+      /* 支线：炼钢炉 → 锅炉房 → 管道区 → 冷却塔 */
+      { from: 'steelmill', to: 'boilerroom' },
+      { from: 'boilerroom', to: 'pipezone' },
+      { from: 'pipezone', to: 'coolingtower' },
+      /* 支线：货运站 → 职工食堂 → 化验室 → 发电厂 */
+      { from: 'freight', to: 'canteen' },
+      { from: 'canteen', to: 'lab' },
+      { from: 'lab', to: 'powerplant' },
+      /* 材料场 ↔ 废水池，两侧各接一条回主链 */
+      { from: 'materialyard', to: 'wastewater' },
+      { from: 'steelmill', to: 'materialyard' },
+      { from: 'coolingtower', to: 'wastewater' },
+    ],
+    mainRoads: [
+      ['southgate', 'freight'], ['freight', 'steelmill'], ['steelmill', 'assembly'],
+      ['assembly', 'powerplant'],
+      ['southgate', 'railway'], ['railway', 'oiltank'], ['oiltank', 'chimney'],
+      ['chimney', 'coolingtower'], ['coolingtower', 'powerplant'],
+    ],
+    neighbors: ['wasteland', 'island'],
+    primaryShelter: 'powerplant',
     unlocked: false,
   },
 
@@ -252,12 +355,35 @@ export const REGIONS = {
     id: 'coast',
     name: '东海岸',
     type: 'region',
-    placeholder: true,
-    nodes: ['eastgate'],                /* 只有接口节点，内部节点等 b2 */
-    edges: [],
-    mainRoads: [],
-    neighbors: ['wasteland'],
-    primaryShelter: null,
+    /* v1.9.0b2 落地：eastgate + dockgate 两个共享接口 + 8 个专属节点 = 10 */
+    nodes: ['eastgate', 'dockgate',
+      'coastalroad', 'beach', 'breakwater', 'observationdeck',
+      'fishingvillage', 'rockybeach', 'seacave', 'shipyard'],
+    /* 两条沿海链 + 一条横连（beach ↔ fishingvillage），形成环路 */
+    edges: [
+      /* 上链：东关 → 海岸公路 → 沙滩 → 防波堤 → 观景台 → 码头关 */
+      { from: 'eastgate', to: 'coastalroad' },
+      { from: 'coastalroad', to: 'beach' },
+      { from: 'beach', to: 'breakwater' },
+      { from: 'breakwater', to: 'observationdeck' },
+      { from: 'observationdeck', to: 'dockgate' },
+      /* 下链：东关 → 渔村 → 岩石滩 → 海蚀洞 → 废弃船厂 → 码头关 */
+      { from: 'eastgate', to: 'fishingvillage' },
+      { from: 'fishingvillage', to: 'rockybeach' },
+      { from: 'rockybeach', to: 'seacave' },
+      { from: 'seacave', to: 'shipyard' },
+      { from: 'shipyard', to: 'dockgate' },
+      /* 横连：沙滩 ↔ 渔村 */
+      { from: 'beach', to: 'fishingvillage' },
+    ],
+    mainRoads: [
+      ['eastgate', 'coastalroad'], ['coastalroad', 'beach'], ['beach', 'breakwater'],
+      ['breakwater', 'observationdeck'], ['observationdeck', 'dockgate'],
+      ['eastgate', 'fishingvillage'], ['fishingvillage', 'rockybeach'],
+      ['rockybeach', 'seacave'], ['seacave', 'shipyard'], ['shipyard', 'dockgate'],
+    ],
+    neighbors: ['wasteland', 'dock'],
+    primaryShelter: 'eastgate',
     unlocked: false,
   },
 
@@ -266,7 +392,7 @@ export const REGIONS = {
     name: '码头',
     type: 'region',
     placeholder: true,
-    nodes: [],                          /* 与东海岸的接口等 b2 落地时再接 */
+    nodes: ['dockgate'],                /* v1.9.0b2：接上东海岸的接口；内部节点等 b4 */
     edges: [],
     mainRoads: [],
     neighbors: ['coast'],
@@ -279,7 +405,7 @@ export const REGIONS = {
     name: '孤岛',
     type: 'region',
     placeholder: true,
-    nodes: [],                          /* 与工业区的接口等 b2 / b4 落地时再接 */
+    nodes: ['powerplant'],              /* v1.9.0b2：接上工业区的接口；内部节点等 b4 */
     edges: [],
     mainRoads: [],
     neighbors: ['industry'],
@@ -647,6 +773,24 @@ export function getNodeNoise(nodeId) {
 const REGION_VIEW_POS = {
   giantwall: {
     wallgate: { x: 940, y: 300 },
+  },
+  /* v1.9.0b2：新落地两个区域之后，它们各自的共享接口也要挪到「朝对面区域」的那一侧：
+       industry 的 southgate（逻辑坐标是废城南端 700,560）→ 挪到工业区北端
+       coast    的 eastgate （逻辑坐标是废城东端 930,300）→ 挪到东海岸西端
+     另外 powerplant / dockgate 的逻辑坐标分别是「工业区南端 / 东海岸东端」，
+     到了占位区域（孤岛 / 码头）那一侧也要反过来贴边 —— 虽然 b4 之前进不去，
+     但区域视图一旦被渲染（比如 debug 直接切视图），位置也必须是对的。 */
+  industry: {
+    southgate: { x: 500, y: 60 },
+  },
+  coast: {
+    eastgate: { x: 60, y: 300 },
+  },
+  island: {
+    powerplant: { x: 500, y: 60 },
+  },
+  dock: {
+    dockgate: { x: 60, y: 300 },
   },
 };
 
