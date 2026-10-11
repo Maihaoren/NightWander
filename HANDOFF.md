@@ -170,7 +170,7 @@ debug 指令当前实际支持（`getAllCommandNames()` 实测返回值）：`['
 ## 4. 关键约定与设计决策
 
 **存档与版本**
-- 存档版本常量 `VERSION` 在 `saveSystem.js`，**当前为 3**；游戏版本号在 `config.GAME_VERSION`，**当前 `v1.8.14`**；两者独立递增（游戏版本升了但存档结构没变，`VERSION` 就不用动）。v1 / v2 存档不提供迁移，只提示「存档版本过旧，无法加载」。
+- 存档版本常量 `VERSION` 在 `saveSystem.js`，**当前为 3**；游戏版本号在 `config.GAME_VERSION`，**当前 `v1.9.0a`**；两者独立递增（游戏版本升了但存档结构没变，`VERSION` 就不用动）。v1 / v2 存档不提供迁移，只提示「存档版本过旧，无法加载」。
 - **【用户要求】更新日志必须同步维护**：每次改 `GAME_VERSION`，都要在仓库根目录的 `CHANGELOG.md` 顶部新增一节（格式与分类约定见该文件开头），并按 `git tag -a vX.Y.Z` 打标签。只写已发生的事实，计划留在本文档。
 - 惯例：解析失败一律返回 `null`，由 `main` 打印 `存档无效`；导入前 `window.confirm` 确认，导入后必须「停旧定时器 → 替换 state → 重启定时器 → 重绘全部 UI」。
 
@@ -220,6 +220,8 @@ debug 指令当前实际支持（`getAllCommandNames()` 实测返回值）：`['
 | 14 | **启动阻塞有三层，顺序已实测确定**：① `config.js` 缺 `CROSS_REGION_COST_SEC`（链接期 SyntaxError）→ ② 补上后 `texts.js` 缺 `SCENES.lighthouse`（求值期 `TypeError: Cannot read properties of undefined (reading 'options')`）→ ③ `main.js` 缺 `GOAL_ID` 等 4 个导入（链接期 SyntaxError）。**只补 config.js 页面依然打不开** | **第二轮实测确认**，未修复 | 在临时副本中逐层补桩后 import 得到的三条报错 |
 | 15 | **`v6` 下行尾格式不统一**：7 个文件纯 LF（`index.html`/`config.js`/`inventory.js`/`map.js`/`saveSystem.js`/`state.js`/`timeSystem.js`），5 个文件 CRLF/LF 混排**且带 UTF-8 BOM**（`style.css`/`debug.js`/`main.js`/`terminal.js`/`texts.js`） | 已确认，**刻意未修改** | 逐字节统计。这正是文档里「PowerShell 补丁多次 `MISS`：锚点与实际文件 CRLF/文字不一致」的根因 |
 | 16 | 环境：本机 `winget` 完全不可用（任何命令返回 `0x8A150001`），系统 schannel 被环境挡住（`SEC_E_NO_CREDENTIALS`，`curl` 亦不可用），GitHub HTTPS 间歇性失败（DNS 返回污染地址 `198.51.44.8`/`198.51.45.8`） | 已确认（若日后要推远程须注意） | 第二轮实测；本地 Git 不受影响，`git` 已设 `http.sslBackend=openssl` |
+| 17 | **mustResolve 门禁仍可被「系统附加入口」满足**（v1.9.0a 已知限制，未修）：`onOptionClick()` 里 `if (node.mustResolve) game.markMustResolveResolved(node.id);` 对任何选项都生效；`terminal.setLocked()` 只 `disable` 输入框**不禁用按钮行**，`.map-modal` 遮罩又只覆盖地图面板 → 弹窗开着时仍可点按钮行的「掏出怀表看一眼」把门禁满足掉。v1.9.0a 只修了弹窗里的误渲染（`resolveMustResolve()` 过滤 `systemOption`），按用户「仅去除误渲染」要求未动这一处 | **已确认，刻意未修** | v1.9.0a 的 `nw_r16_check.mjs` 实测；候选改法：该行加 `&& !option.systemOption`（一行） |
+| 18 | v1.9.0a 新增的两份文档（日记 / 作者留言）没有独立 CSS 类，外观与物品按钮一致，靠名称区分；若要做视觉区分需动 `style.css` | 已确认，未做 | `renderInventory()` 复用 `itemButton()`；用户本轮建议「标注为『作者留言』」即视为已满足 |
 
 关键报错记录（已确认原因）：
 - `SyntaxError: Identifier 'NODES' has already been declared`（`main.js` 被重复插入 import）→ 已修；症状是浏览器整页无输出。

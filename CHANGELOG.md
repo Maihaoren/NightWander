@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.8.14` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0a` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `3` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -34,6 +34,111 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.9.0a] — 2026-10-11 —— 家储物箱加「日记 / 作者留言」+ 修掉怀表「看时间」入口误渲染进 mustResolve 弹窗
+
+**回档点 / git 标签**：`v1.9.0a`
+
+> 版本号本次按用户明确要求从 `v1.8.14` 跨到 `v1.9.0a`（不是默认的 patch 递增）。
+> **存档结构未变**：`saveSystem.js` 的 `VERSION` 仍是 `3`，旧存档照常加载。
+
+### 新增
+
+- **家储物箱里多出两条可反复阅读的文档**（只在 `shelterKey === HOME_ID` 时渲染）：
+  - **日记** —— 描述 `一本翻旧了的日记。`
+  - **作者留言**（README）—— 描述 `一张夹在盒子里的纸。`
+- `v6/js/texts.js`：新增导出 `DIARY_TEXT`（4 段）、`README_TEXT`（4 段，`海岸区域` 已按要求改为 `码头`）、
+  `DOCUMENTS`（`[{ id, name, desc, body }]`，`body` 为段落数组）。
+  **两份文档刻意不是 `ITEMS` 成员** —— 拾取 / 装备 / 事件刷物品全部以 `ITEMS[id]` 为凭据，
+  不进去就永远拿不走，也不会被随机事件刷到地上。
+- `v6/js/main.js`：新增 `readDocument(doc)` —— 用 `terminal.logLines()` 先出一行
+  `UI.inspect(name, desc)`（沿用既有「先名称再描述」约定，即 `你查看 日记：一本翻旧了的日记。`），
+  再一段一行铺正文。纯读取：不改 state、不消耗时间，可以反复点。
+
+### 修复
+
+- **症状**：玩家背包里带着怀表时，mustResolve 弹窗（松林 n1 / 洞穴 n3 / 哨塔 n5 / 岔路口 n7 / 灯塔）
+  会多渲染出一个「掏出怀表看一眼」，出现在本该只有「这个地点要你做的决定」的列表里。
+- **根因**：`main.js` 的 `ensureTimeOption(node)` 把「看时间」类伪选项（老钟 / 街角老钟 / 怀表）
+  塞进了和地点真选项**同一个**数组，`buildOptions()` 顺手给了它一个 `fullIndex`；
+  而 `resolveMustResolve()` 用
+  `const choices = currentButtons().filter((b) => !b.disabled);`
+  取「可用选项」当作弹窗条目 —— 它分不清「玩家要做的决定」和「系统附加入口」，
+  于是怀表跟着一起进了弹窗。带怀表时弹窗从 2 条变 3 条，就是这一处。
+- **修法**（两处，都是最小改动）：
+  1. `ensureTimeOption()` 的三个返回值各加一个 `systemOption: true` 字段，把「这是系统附加入口、
+     不是决定」显式写在数据上（没有复用 `timeKind` —— 那个字段的语义是「印哪句钟表文案」，
+     拿它当过滤依据是隐式耦合，将来加第四个钟表来源就会踩坑）；
+  2. `resolveMustResolve()` 的过滤条件改为
+     `!b.disabled && !b.option.systemOption`。
+- **保留的东西**：`掏出怀表看一眼` 在终端选项行与按钮行里照常出现、照常能点、照常报时 ——
+  那才是设计中的合法查看入口，只去掉了它在弹窗里的误渲染。
+  怀表物品本体与获取位置（灯塔 `lighthouse` 节点的 `items`）一个字没动。
+- **连带效果**：地点自己的选项都用光时，现在会正确地走 `UI.mustResolveNothing`
+  （提示一句 + 视为已解除），而不是弹一个「只有怀表」、点了也不算做决定的窗。
+
+### 变更
+
+- **签名 / 字段**：
+  - `ensureTimeOption(node)` 返回值新增字段 `systemOption: true`（三个分支都有）。
+    该选项对象只存在于运行时（`toSnapshot()` 不含 `options`），所以**存档不受影响**。
+  - `readDocument(doc)` 新增，无返回值；`doc` 形如 `{ id, name, desc, body: string[] }`。
+  - `DOCUMENTS`、`DIARY_TEXT`、`README_TEXT` 三个新导出；`texts.js` 原有导出（`UI` / `EVENTS` / `ITEMS` / `SCENES`）签名不变。
+- `renderInventory()` 里储物箱那段由内联的 `storage.map(...)` 提成局部变量 `storageRows`，
+  再在 `shelterKey === HOME_ID` 时追加两条文档行 —— 分区标题仍只统计真物品
+  （家开局显示 `储物箱 5/20`，不含这两条，所以**不占容量**）。
+- `GAME_VERSION`：`v1.8.14` → `v1.9.0a`。
+
+### 变更清单
+
+| 文件 | 改动 |
+|---|---|
+| `v6/js/texts.js` | 新增 `DIARY_TEXT` / `README_TEXT` / `DOCUMENTS`（插在 `ITEMS` 之后、`SCENES` 之前） |
+| `v6/js/main.js` | `import` 增加 `DOCUMENTS`；新增 `readDocument()`；`ensureTimeOption()` 三处加 `systemOption`；`resolveMustResolve()` 过滤条件；`renderInventory()` 储物箱段 |
+| `v6/js/config.js` | `GAME_VERSION` → `v1.9.0a` |
+
+**未改动**：`map.js`（没往 home 的 `items` 里加东西）、`state.js`、`saveSystem.js`、`inventory.js`、
+`terminal.js`、`modal.js`、`timeSystem.js`、`events.js`、`debug.js`、`style.css`。
+特别是 `state.js` 一行未动 —— 两份文档不进 state，所以快照结构与内容都不变。
+
+### 验证
+
+- 新增 `.tools/nw_r16_check.mjs`（**全部通过**）：
+  - 改动 1：`DIARY_TEXT` / `README_TEXT` 与要求**逐字比对**（含 README 里已是「码头」、无「海岸区域」残留）；
+    `DOCUMENTS` 的 id / 名称 / 描述 / 段数；两份文档确认**不在** `ITEMS` 里。
+  - 改动 2：家渲染出 `储物箱 5/20` 且两条排在真物品之后；不在「当地物品」区；两条都可点未置灰；
+    title = 简短描述；点击后终端先出 `你查看 X：Y` 再逐段出正文；可反复读；
+    时间 / 体力 / 电量零变化；储物箱仍 5 件、口袋与装备槽仍空；
+    `toSnapshot()` 的字段集合与改动前完全一致且不含这两条；渲染处确实是 `shelterKey === HOME_ID`。
+  - 改动 3：三个伪选项都带 `systemOption`、且没有任何 `SCENES` 选项自带该标记（不会误伤真选项）；
+    在 n5（无光源）/ n7 / n5（有手电筒）/ n3 四个场景下，
+    弹窗内容 === 当前可用按钮减去伪选项、且不含「怀表」；按钮行仍保留怀表入口；
+    点弹窗条目执行的确实是那条真选项（索引映射没坏）；
+    真选项用光的判别性用例走 `mustResolveNothing` 而不再弹「只有怀表」的窗；
+    按钮行点怀表仍正常报时。
+- **反证**：把 `resolveMustResolve()` 的过滤条件临时改回 `!b.disabled`，该套件立刻 **11 条 FAIL**
+  （四个场景的弹窗都多出怀表 + 判别性用例失效），确认修复是**承重**的，不是巧合通过。
+- 顺带确认的既有行为（**不是**本次修复）：`n5` 的「使用手电筒探查」需要 `HOLDS_FLASHLIGHT`、
+  `n3` 的「进入洞穴」需要 `HOLDS_LIGHT`，因此没带光源时它们不进弹窗 —— 这是 `map.js` 的 `REQUIRES` 门控，
+  与怀表无关，套件里单列了一条断言把它和本次修复区分开。
+- 回归：`nw_r15` / `nw_r14` / `nw_r14_hover` / `nw_r13` / `nw_r12` / `nw_r11` / `nw_r10` /
+  `nw_r9_e2e` / `nw_r8` / `nw_e2e2` / `nw_boot_check` / `nw_link_check` 全部通过；
+  `v6/js` 全部文件 `node --check` 通过；`main.js` / `texts.js` 的 UTF-8 BOM 与 `HEAD` 逐字节一致。
+
+### 已知限制 / 遗留
+
+- **同一根因还有一条未堵的路径**：`onOptionClick()` 里
+  `if (node.mustResolve) game.markMustResolveResolved(node.id);` 对**任何**选项都生效，
+  而 `terminal.setLocked()` 只 `disable` 输入框、**不禁用按钮行**，`.map-modal` 的遮罩又只覆盖地图面板
+  （`style.css` 注释也写了「只覆盖地图区」）。所以 mustResolve 弹窗开着时，
+  理论上仍能点按钮行的「掏出怀表看一眼」把门禁满足掉。
+  用户本轮明确要求「仅去除误渲染、其余不动」，因此**这一处刻意没改**，留待下一版评估
+  （候选改法：`... && !option.systemOption`，一行）。
+- 两份文档没有单独的 CSS 类，外观与物品按钮一致；与日记的区分按用户建议**靠名称「作者留言」**。
+  若想让它们视觉上进一步区分，需要动 `style.css`，本轮未做。
+- 文档内容写死在 `texts.js`，不随剧情推进变化，也不受存档影响（任何存档下、任何一天都读得到同样内容）。
 
 ---
 

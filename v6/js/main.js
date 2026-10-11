@@ -8,7 +8,7 @@ import {
   STAMINA_MIN, BATTERY_MAX, FORCE_HOME_PENALTY, MOVE_STAMINA_COST, TICK_INTERVAL_MS, DEBUG_CONSOLE,
   SHELTER_OVERNIGHT_COST_SEC, EVENTS_DEFAULT, EVENT_HOVER_SHOW_EFFECT,
 } from './config.js';
-import { UI, SCENES, ITEMS } from './texts.js';
+import { UI, SCENES, ITEMS, DOCUMENTS } from './texts.js';
 import {
   initMap, refreshMap, setMapView, getNode, getNodes, getRegion, getNodeIds,
   isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
@@ -189,6 +189,16 @@ function inspectItem(item) {
   terminal.log(UI.inspect(item.name, item.desc));
 }
 
+/**
+ * 读一份储物箱里的文档（日记 / 作者留言）。
+ * 沿用物品查看的日志风格：先名称再描述（UI.inspect 一行），再一段一行铺正文。
+ * 纯读取：不动 state、不消耗时间、不占容量，所以可以反复点。
+ */
+function readDocument(doc) {
+  if (game.isGameOver()) return;
+  terminal.logLines([UI.inspect(doc.name, doc.desc), ...doc.body]);
+}
+
 function renderInventory() {
   const el = document.getElementById('inventory');
   const count = document.getElementById('inventory-count');
@@ -258,17 +268,31 @@ function renderInventory() {
 
   /* 储物箱：只在安全屋可见 */
   if (atHome) {
+    const storageRows = storage.map((item) => {
+      const plan = inventory.planTakeFromStorage(item, equipped, pocket);
+      const suffix = plan.mode === 'equip' ? '（可装备）' : (plan.mode === 'hand' ? '（可拿在手里）' : '');
+      return itemButton(`${item.name}${suffix}`, {
+        onClick: () => takeFromStorage(item),
+        disabled: Boolean(plan.reason),
+        hint: item.pockets ? `可提供 ${item.pockets} 个口袋格` : '',
+      });
+    });
+
+    /* 家特有的两份文档（日记 / 作者留言）：跟在真物品后面列在同一个储物箱里。
+       它们不是物品 —— 不在 storage 数组里，所以不占容量、计数也不含它们、
+       点一下只是读（见 readDocument），既不消耗时间也不会被拿进背包。 */
+    if (shelterKey === HOME_ID) {
+      for (const doc of DOCUMENTS) {
+        storageRows.push(itemButton(doc.name, {
+          onClick: () => readDocument(doc),
+          hint: doc.desc,
+        }));
+      }
+    }
+
     el.appendChild(section(
       `${UI.inventory.storage} ${storage.length}/${game.getStorageCapacity(shelterKey)}`,
-      storage.map((item) => {
-        const plan = inventory.planTakeFromStorage(item, equipped, pocket);
-        const suffix = plan.mode === 'equip' ? '（可装备）' : (plan.mode === 'hand' ? '（可拿在手里）' : '');
-        return itemButton(`${item.name}${suffix}`, {
-          onClick: () => takeFromStorage(item),
-          disabled: Boolean(plan.reason),
-          hint: item.pockets ? `可提供 ${item.pockets} 个口袋格` : '',
-        });
-      }),
+      storageRows,
     ));
   }
 
@@ -423,12 +447,18 @@ function hasItem(id) {
   return Object.values(game.getEquipped()).some((item) => item && item.id === id);
 }
 
-/** 按地点/物品决定是否追加一个“看时间”类选项；不追加时返回 null */
+/**
+ * 按地点/物品决定是否追加一个“看时间”类选项；不追加时返回 null。
+ *
+ * systemOption 标记：这是**系统附加入口**，不是玩家在当前地点要做的决定。
+ * 它照常出现在终端选项行与按钮行里（那才是设计中的合法入口），
+ * 但不许进 mustResolve 弹窗 —— 见 resolveMustResolve 里的过滤。
+ */
 function ensureTimeOption(node) {
   if (node.id === GOAL2_ID) return null;
-  if (node.id === HOME_ID) return { text: '看一眼墙上的老钟', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'home' };
-  if (node.id === 'n2') return { text: '查看街角的老钟', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'street' };
-  if (hasItem('pocketwatch')) return { text: '掏出怀表看一眼', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'watch' };
+  if (node.id === HOME_ID) return { text: '看一眼墙上的老钟', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'home', systemOption: true };
+  if (node.id === 'n2') return { text: '查看街角的老钟', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'street', systemOption: true };
+  if (hasItem('pocketwatch')) return { text: '掏出怀表看一眼', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'watch', systemOption: true };
   return null;
 }
 
@@ -628,7 +658,9 @@ async function resolveMustResolve(node) {
   if (!node.mustResolve) return;
   if (game.isMustResolveResolved(node.id)) return;
 
-  const choices = currentButtons().filter((b) => !b.disabled);
+  /* 只列「这个地点要你做的决定」：系统附加入口（看时间类）不是决定，一律不进弹窗。
+     它们仍然照常出现在终端选项行与按钮行里。 */
+  const choices = currentButtons().filter((b) => !b.disabled && !b.option.systemOption);
   if (choices.length === 0) {
     terminal.log(UI.mustResolveNothing);
     game.markMustResolveResolved(node.id);
