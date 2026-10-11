@@ -140,7 +140,23 @@ export function planDrop(item, equipped, pocket) {
   return { reason: '这件东西不在你身上。' };
 }
 
-/* ---------------- 穿上装备（v1.9.0b2.2 改动 3） ---------------- */
+/* ---------------- 穿上装备（v1.9.0b2.2 改动 3；v1.9.0b2.3 改动 3 抽出 canEquip） ---------------- */
+
+/**
+ * 能不能穿在身上 —— **唯一判据就是「物品自己带 slot」**，与槽位叫什么无关。
+ *
+ * v1.9.0b2.3 改动 3 把这条判断抽成一个函数：以前「能不能装备」是在好几处各写一遍
+ * （`item.slot` 真值判断 / `planEquipFromCarried` 里的守卫），只要有一处写成
+ * 「只认 torso / legs」这类硬编码，第一个 back 槽物品（电容器）就会被漏掉。
+ * 现在物品栏的「装备」按钮、拾取弹窗的「装备 X」、以及 planEquipFromCarried 全走这一条。
+ *
+ * 注意：槽位合法性只由 SLOTS 定义（`['hand','torso','legs','back']`），
+ * 容量只统计 POCKET_SLOTS 里装备的 `pockets` 之和 —— 电容器 `pockets: 0`，
+ * 所以穿上它不会改变口袋容量（第一件 back 物品也不会挤掉别的槽位）。
+ */
+export function canEquip(item) {
+  return Boolean(item && item.slot);
+}
 
 /**
  * 把【已经在身上的】一件装备穿上（口袋或手持槽里的那件）。
@@ -167,7 +183,9 @@ export function planDrop(item, equipped, pocket) {
  */
 export function planEquipFromCarried(item, equipped, pocket, from = 'pocket') {
   if (!item) return { reason: '没有这件物品。' };
-  if (!item.slot) return { reason: '这东西穿不上。' };
+  if (!canEquip(item)) return { reason: '这东西穿不上。' };
+  /* 槽位名必须真的在 SLOTS 里 —— 防止物品表里写错槽名时静默「装备成功」却没有槽位承接 */
+  if (!SLOTS.includes(item.slot)) return { reason: '这东西没地方穿戴。' };
 
   const current = equipped[item.slot] || null;
   if (!current) return { mode: 'equip', slot: item.slot };

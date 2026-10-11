@@ -67,19 +67,24 @@ export const UI = {
   noOptionToRun: '当前没有可执行的选项',
   optionNoRequirement: '当前无法使用',
 
-  /* 拾取（整理物品式弹窗） */
+  /* 拾取（整理物品式弹窗）
+     v1.9.0b2.3 改动 3：可装备的东西（有 slot）多出一条「装备 X」——
+     在到达时的拾取弹窗里就能「拿起来顺手穿上」，不用先收进口袋再点物品栏那个小按钮。 */
   pickupTitle: '发现物品',
   pickupDesc: '地上散着几样东西。要拿哪一件？',
   pickupTakeAll: '带走拿得下的',
   pickupSkipAll: '全部放弃',
   pickupLater: '稍后处理',
+  pickupEquip: (name) => `装备 ${name}`,
+  pickupEquipHint: (name) => `把${name}拿起来直接穿戴（不占口袋；脱下要回安全屋）`,
 
   /* mustResolve 弹窗 */
   mustResolveNothing: '这里似乎没什么可做的。',
 
-  /* 空地点（v1.9.0b2.2 改动 1）：既没有物品、也没有资源交换、也没有别的交互时，
-     到达后补一句，免得玩家以为卡住了。判定在 main.js 的 hasNothingToDo()。 */
-  nothingHere: '这里什么也没有。',
+  /* 空地点（v1.9.0b2.2 改动 1；v1.9.0b2.3 改动 2 改成「这里什么都没有」并顶替「你要做什么？」）：
+     既没有物品、也没有资源交换、也没有别的交互时，到达后只打这一句，不再追问「你要做什么？」。
+     判定在 main.js 的 hasNothingToDo()。 */
+  nothingHere: '这里什么都没有。',
 
   /* 区域切换 */
   cannotGoDirectly: '你无法直接前往那里，需要走陆路。',
@@ -165,8 +170,12 @@ export const UI = {
   watchTime: (t) => `怀表指针停在 ${t}。`,
   watchDark: '怀表指针也看不清了。',
 
-  /* 随机事件弹窗（与 mustResolve 一样：只有选项按钮，必须选一个才能继续） */
-  eventTitle: '突发事件',
+  /* 随机事件弹窗（与 mustResolve 一样：只有选项按钮，必须选一个才能继续）
+     v1.9.0b2.3 改动 1：标题从「突发事件」改成「在路途上：」——只换这一条字，
+     正文（事件 desc）、选项、触发时机、以及「选择窗 → 结果窗」的流程都没动。
+     它只用在 main.js 的 runEventFlow（随机事件那一个弹窗）；
+     资源交换 / 安全屋 / 拾取 / mustResolve 四个弹窗的标题各自独立，不受影响。 */
+  eventTitle: '在路途上：',
   /* 选完之后的「结果弹窗」：只一个按钮；里面放【效果文本】（系统信息，不是叙事） */
   eventResultTitle: '结果',
   eventContinue: '继续',

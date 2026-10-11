@@ -281,7 +281,7 @@ function renderInventory() {
         onDrop: (atHome && item) ? null : (item ? () => dropItemToNode(item) : null),
         dropHint: item ? UI.dropHint(item.name) : '',
         /* v1.9.0b2.2 改动 3：手持槽里拿着装备时也能直接穿上（野外不用回安全屋） */
-        extras: (item && item.slot) ? [{
+        extras: inventory.canEquip(item) ? [{
           text: UI.equipAction,
           hint: UI.equipHint(item.name),
           onClick: () => equipFromCarried(item, 'hand'),
@@ -313,7 +313,7 @@ function renderInventory() {
         return carriedItemRow(`${item ? item.name : itemId}${suffix}`, {
           onClick: () => localPickup(itemId),
           hint: item ? item.desc : '',
-          extras: (item && item.slot) ? [{
+          extras: inventory.canEquip(item) ? [{
             text: UI.equipAction,
             hint: UI.equipHint(item.name),
             onClick: () => localEquip(itemId),
@@ -379,7 +379,7 @@ function renderInventory() {
     dropHint: UI.dropHint(item.name),
     extras: [
       /* v1.9.0b2.2 改动 3：口袋里的装备可以直接穿上（野外与在家都行；脱下仍只在安全屋） */
-      ...((item.slot) ? [{
+      ...(inventory.canEquip(item) ? [{
         text: UI.equipAction,
         hint: UI.equipHint(item.name),
         onClick: () => equipFromCarried(item, 'pocket'),
@@ -490,9 +490,12 @@ function onPocketClickAway(item) {
   pocketToHand(item);
 }
 
-/* ---------------- 穿上装备（v1.9.0b2.2 改动 3） ----------------
-   b2.1 的规则是「野外只能捡、不能装备」；本块改成：**所有捡到的装备都能立刻穿上**，
-   入口是物品栏里的「装备」小按钮（口袋行 / 手持槽行 / 当地物品行各一个）。
+/* ---------------- 穿上装备（v1.9.0b2.2 改动 3；v1.9.0b2.3 改动 3 补拾取弹窗入口） ----------------
+   b2.1 的规则是「野外只能捡、不能装备」；b2.2 改成**所有捡到的装备都能立刻穿上**。
+   v1.9.0b2.3：把「能不能穿」统一交给 inventory.canEquip(item)（唯一判据 = 物品自带 slot），
+   并在**到达时的拾取弹窗**里也给出「装备 X」——那是野外拿东西的第一入口，
+   以前只能先把东西收进口袋、再去点物品栏那个窄按钮，back 槽的第一件装备（电容器）就是这么被漏掉的。
+   入口一共四处：拾取弹窗 / 当地物品行 / 口袋行 / 手持槽行。
    判定在 inventory.planEquipFromCarried（纯函数），状态改动在这里调 state.js
    —— 与口袋 ↔ 手持、丢弃、储物箱那些整理操作同一套分工。
    **脱下仍然只在安全屋**：unequip() 开头那句 currentShelterKey() 判断一行没动。 */
@@ -559,23 +562,35 @@ function carriedInstanceOf(itemId) {
 }
 
 /**
- * 点「当地物品」区里那件装备右侧的「装备」按钮：
- * 先按原有拾取规则把它拿起来（口袋 → 手持槽 → 空间不够就弹替换窗），再立刻穿上。
- * 这就是需求说的「野外捡到的装备可以立即装备」；两个动作都不消耗时间。
+ * 【改动 3】拿起一件东西并立刻穿上 —— 野外的「装备」入口共用这一条（v1.9.0b2.3）。
+ *   拾取阶段：按原有规则放（口袋 → 手持槽 → 空间不够就弹替换窗），不消耗时间；
+ *   装备阶段：走 equipFromCarried（槽位已有装备时会弹「换上 / 先不换」）。
+ * 调用方：拾取弹窗里的「装备 X」条目、物品栏「当地物品」行的「装备」按钮。
+ * @returns {Promise<boolean>} 是否真的穿上了
+ */
+async function takeAndEquip(node, itemId, item) {
+  if (game.isGameOver() || !node || !item) return false;
+  if (!inventory.canEquip(item)) { terminal.log('这东西穿不上。'); return false; }
+  if (game.state.collectedItems.has(itemId)) return false;   /* 已经被拿走了（弹窗列表可能已经过期） */
+
+  const taken = await tryTakeItem(node, itemId, item);
+  if (!taken) return false;                                  /* 玩家在替换窗里放弃了 */
+
+  const carried = carriedInstanceOf(itemId);
+  if (!carried) return false;
+  return equipFromCarried(carried.item, carried.from);
+}
+
+/**
+ * 点「当地物品」区里那件装备右侧的「装备」按钮：拿起 + 立刻穿上。
+ * 具体逻辑在 takeAndEquip（与拾取弹窗里的「装备 X」是同一条）。
  */
 async function localEquip(itemId) {
   if (game.isGameOver()) return;
   const node = getNode(game.getCurrentNode());
   const item = ITEMS[itemId];
-  if (!node || !item || !item.slot) return;
-  if (game.state.collectedItems.has(itemId)) return;      /* 已经被拿走了 */
-
-  const ok = await tryTakeItem(node, itemId, item);
-  if (!ok) { renderInventory(); return; }                 /* 玩家在替换窗里放弃了 */
-
-  const carried = carriedInstanceOf(itemId);
-  if (!carried) { renderInventory(); return; }
-  await equipFromCarried(carried.item, carried.from);
+  if (!node || !item) return;
+  await takeAndEquip(node, itemId, item);
   renderInventory();
 }
 
@@ -984,13 +999,15 @@ async function arriveAt(node) {
   }
   terminal.log('');                                  /* 到达后空行 */
   terminal.log(node.desc);                           /* 2 */
-  terminal.log(UI.prompt);                           /* 3 */
+  /* 3 【改动 2】默认追问「你要做什么？」只在【这里确实有事可做】时才打；
+       什么都没有的地点改成只打「这里什么都没有。」（b2.2 那一步的输出位置也挪到这里，
+       免得「你要做什么？」和「什么都没有」一前一后叠着出现）。
+       判定沿用 hasNothingToDo()：无物品 + 无资源交换 + 无其它交互，三者全满足才算空。 */
+  const barren = hasNothingToDo(node);
+  if (barren) terminal.log(UI.nothingHere);
+  else terminal.log(UI.prompt);
   renderInventory();                                 /* 3.5 先让物品栏的「当地物品」区显示出来 */
   await pickUpItems(node);                           /* 4 */
-  /* 4.5 【改动 1】什么都没有的地点补一句，免得玩家以为卡住了。
-         判定见 hasNothingToDo()：无物品 + 无资源交换 + 无其它交互，三者全满足才说。
-         不消耗时间、不弹窗、不加选项。 */
-  if (hasNothingToDo(node)) terminal.log(UI.nothingHere);
   terminal.log(UI.optionLine(currentButtons()), 'options');   /* 5 选项列表加粗 */
   refreshButtons();                                  /* 6 */
   renderStatusBar();
@@ -1017,8 +1034,9 @@ async function arriveAt(node) {
  *        （系统附加入口如「看一眼墙上的老钟」不算交互；v1.9.0b2.2 起交换选项本身就是普通选项，
  *          第 2 条已经覆盖它，这里再按 kind 排一次是为了防止将来加别的系统入口时误判）
  *
+ * 【改动 2】它还决定到达时打哪一句：为真 → UI.nothingHere；为假 → 照旧问 UI.prompt。
  * 注意：随机事件是「到达之后」才掷的（travelTo 里 arriveAt 的下一条），
- * 所以这里无法预知会不会紧跟着弹一个事件 —— 那种情况下玩家会先看到「这里什么也没有」再看到事件。
+ * 所以这里无法预知会不会紧跟着弹一个事件 —— 那种情况下玩家会先看到空地点那一句、再看到事件。
  */
 function hasNothingToDo(node) {
   if (!node) return false;
@@ -1155,9 +1173,21 @@ async function pickUpItems(node) {
     const result = await withTimePaused(() => modal.showModal({
       title: UI.pickupTitle,
       desc: UI.pickupDesc,
-      items: pickable.map((itemId) => {
+      /* v1.9.0b2.3 改动 3：可装备的东西（有 slot）多出一条「装备 X」——
+         这是野外拿东西的第一入口，放在这里才算真的「捡到就能立刻穿上」。
+         id 用 'equip:<itemId>' 前缀区分：modal 只把它当不透明值回传，
+         所以不用改 modal.js 的结构。 */
+      items: pickable.flatMap((itemId) => {
         const item = ITEMS[itemId];
-        return { id: itemId, text: item ? item.name : itemId, hint: item ? item.desc : '' };
+        const rows = [{ id: itemId, text: item ? item.name : itemId, hint: item ? item.desc : '' }];
+        if (inventory.canEquip(item)) {
+          rows.push({
+            id: `equip:${itemId}`,
+            text: UI.pickupEquip(item.name),
+            hint: UI.pickupEquipHint(item.name),
+          });
+        }
+        return rows;
       }),
       actions: [
         { text: UI.pickupTakeAll, value: 'takeAll' },
@@ -1175,7 +1205,9 @@ async function pickUpItems(node) {
     }
 
     /* 点了某一件 */
-    const itemId = result.id;
+    const rawId = String(result.id);
+    const equipNow = rawId.startsWith('equip:');      /* 走「拿起 + 立刻穿上」那一支 */
+    const itemId = equipNow ? rawId.slice('equip:'.length) : rawId;
     const item = ITEMS[itemId];
     if (!item) {                                      /* 文案缺失时的兜底：直接记走 */
       game.markItemCollected(itemId);
@@ -1183,7 +1215,11 @@ async function pickUpItems(node) {
       changed = true;
       continue;
     }
-    if (await tryTakeItem(node, itemId, item)) changed = true;
+    if (equipNow) {
+      if (await takeAndEquip(node, itemId, item)) changed = true;
+    } else if (await tryTakeItem(node, itemId, item)) {
+      changed = true;
+    }
     /* 玩家在替换窗里放弃 → 该件留在列表里，循环回到拾取模态继续让他选 */
   }
 
@@ -1200,8 +1236,13 @@ function markTaken(node, itemId, logText) {
 /**
  * 尝试拾取一件：口袋优先 → 手持保底槽 → 都不行才弹替换模态。
  * 返回是否拾取成功（玩家在替换窗放弃则返回 false，物品留在节点）。
+ *
+ * v1.9.0b2.3：加一道「这件已经被拿走了」的守卫 —— 拾取弹窗的列表是打开时渲染的快照，
+ * 玩家完全可能在这期间用物品栏的「当地物品 / 装备」入口把它拿走（两个面板都在屏幕上）。
+ * 没有这道守卫的话，再点一次那个过期条目会再发一份同样的物品（重复物品）。
  */
 async function tryTakeItem(node, itemId, item) {
+  if (game.state.collectedItems.has(itemId) && !node.items.includes(itemId)) return false;
   const plan = inventory.planWildPickup(game.getPocket(), game.getEquipped());
 
   if (plan.mode === 'pocket') {
