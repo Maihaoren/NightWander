@@ -11,8 +11,8 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.8.1` | 面向玩家的游戏版本 |
-| `VERSION` | `v6/js/saveSystem.js` | `2` | **存档结构**版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.8.2` | 面向玩家的游戏版本 |
+| `VERSION` | `v6/js/saveSystem.js` | `3` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
 **只要 `VERSION` 变了，本文件必须写明「旧存档能否加载」。**
@@ -34,7 +34,119 @@
 
 ---
 
-## [v1.8.1] — 2026-10-10 —— 手持槽改为「保底物品栏」＋ 5 处改动
+## [v1.8.2] — 2026-10-10 —— 地图结构重构：家独立成区域，灯塔成为跨区域共享节点
+
+**回档点**：`v1.8.2`（另有逐步骤标签 `v1.8.2-refactor-step1` ~ `step7`，可逐步回退）
+**存档格式**：`2` → **`3`**。**v1 与 v2 存档都无法加载**，导入时提示「存档版本过旧，无法加载」
+（按需求不提供迁移工具）。
+
+### 背景
+
+v1.8.0 的结构是「家是 area1 的一个节点，area1 与 area2 靠一个独立的 southgate 节点 +
+一条跨区域边连接」。本次改为：
+
+- **家提升为独立区域** `home`，同时保留在 area1 的节点列表里作为 area1 的起点
+- **灯塔就是跨区域连接点**，`southgate` 节点整条删除
+- **灯塔同时属于 area1 与 area2**（共享节点）
+- 大地图渲染规则与区域地图完全一致
+
+### 新增
+
+- **NODES 全局节点字典**：13 个节点以 id 为键，id 全局唯一；节点新增字段
+  `mustResolve` 与 `mustResolveDesc`
+- **三个区域**：`home`（家）/ `area1`（荒原）/ `area2`（未知地域）；
+  REGIONS 的 `nodes` 改为 **id 数组**，并新增 `type` 与 `neighbors`
+- **共享节点机制**：`home` 同时属于 home/area1，`lighthouse` 同时属于 area1/area2；
+  区域之间**不再有跨区域边**，切换区域就是换一个视图，玩家仍站在同一节点上
+- **大地图三态渲染**（与区域地图规则一致）：
+  已解锁且访问过 → 实心矩形块 + 区域名；已解锁未访问 → 菱形不显示名称；未解锁 → 完全不渲染
+- **区域通道**由 `neighbors` 推导、去重，只在两端区域都可见时画，用粗线 `.region-link`
+- **`js/modal.js`**：通用模态 API `showModal({ title, desc, items, actions })`，
+  半透明遮罩覆盖地图区、不可点击遮罩关闭、复用 `.term-button` 样式
+- **拾取改为「整理物品」式弹窗**：到达节点若地上有东西就弹窗，
+  点单件 → 尝试拾取（空间不够弹替换模态，处理完回到拾取模态，成功则该行消失），
+  「带走拿得下的」按节点顺序依次拿、遇到第一个拿不下的就停，「全部放弃」则全部留在节点；
+  **拾取与放弃都不消耗时间**
+- **mustResolve 改为弹窗**：到达关键节点后弹出「必须从里面选一个」的模态；
+  无可点选项时输出「这里似乎没什么可做的。」并视为已解除
+- **5 个关键节点**：`n1` `n3` `n5` `n7` `lighthouse`；`n2` `n4` `n6` `goal2` `home` 不标记
+- debug 新增/更新：`/area list` 显示三区域，`/area goto {areaId}` 优先停在共享节点上
+
+### 变更
+
+- `GAME_VERSION`：`v1.8.1` → `v1.8.2`
+- `state.currentArea` 取值变为 `'home' | 'area1' | 'area2'`，开局在 `home`
+- `visitedByArea` 按三个区域记录；**共享节点被访问时在每个所属区域里都标记**
+- **储物键与 mustResolve 键改用裸 `nodeId`**（节点 id 已全局唯一）；
+  `makeShelterKey(areaId, nodeId)` 删除
+- `isShelter(nodeId)` = **所有区域 `primaryShelter` 的并集**（= `home` 与 `lighthouse`）；
+  `isPrimaryShelter(nodeId)` 对当前区域判定
+- `map.getNode(nodeId)` 改为全局查表（仍容错接受 `'area2:m1'` 前缀写法）
+- `travelTo` 要求目标节点属于当前区域，且只查当前区域的边
+- 强制回家送到**当前区域自己的** `primaryShelter`（home → home，area1 → home，area2 → lighthouse）
+- 删除 `southgate` 与 `entrance` 两个场景；`lighthouse` 的 desc 增加从塔顶能望见未知地域边缘
+- area2 的四个节点（m1 枯树林 / m2 碎石路 / m3 断桥 / goal2 旅者之石）沿用 v1.8.0 已有的
+  11–12 行纯 ASCII，本次未改
+
+### 已知限制 / 遗留
+
+1. **静态 `unlocked` 标记必须保留**。需求写「区域解锁 = `visitedByArea[id].size > 0`」，
+   但开局 area1 访问数为 0；若严格按此判定，area1 在大地图上不会渲染，
+   玩家就没有入口从「家」走进 area1。因此实现为
+   `isAreaUnlocked = 数据里的初始 unlocked || 访问过任一节点`。
+   开局大地图实测：`home` 实心矩形 + `area1` 菱形 + `area2` 不渲染。
+2. **N1 的名称与需求描述对不上**。需求写「N1 中央大道（捡手电筒）」，但当前
+   `n1` 是北岭松林（才有手电筒），中央大道是 `n2`（放的是火把）。
+   本次按 id 与「捡手电筒」判定，标记的是 `n1`，未改任何节点名。
+3. **`home` 区域只有一个节点，坐标沿用 (80,300)**（共享节点只有一组坐标），
+   单独看「家」区域的区域地图时，这个节点会显示在偏左的位置，不在正中。
+4. **area2 的布局向左延伸**。`lighthouse` 的坐标由 area1 那侧定死（x=800，最右），
+   右边放不下 m1~goal2，所以 area2 是 lighthouse(800,300) → m1(620,120) →
+   m2(460,300) → m3(300,120) → goal2(140,300)。噪声重叠实测为 0。
+5. **mustResolve 的「不能离开」闸门保留**（v1.8.1 已有）。弹窗负责逼玩家选，
+   闸门负责选了才能走。但模态只覆盖地图区，终端输入框没被挡住，
+   理论上能用 `/goto` 绕过闸门（`goto` 不经过 `travelTo`）。
+6. **`UI.notHere`（你现在不在这里。）与 `UI.crossRegionWalk` 已成为无人引用的遗留文案**，
+   它们被「你无法直接前往那里，需要走陆路。」与「你不在通往那里的路上。」取代。
+7. 上一版遗留未动：时间只在 `home` 节点暂停（`timeSystem.js` 的判定），
+   在灯塔过夜时时间照常流逝；`UI.foundLighthouse` / `SAVE_OPTIONS` / `REACH` 无人引用。
+8. **仍未做真实浏览器回归**（本机无可用浏览器自动化）。本轮做到 11 个模块全部链接、
+   DOM 桩跑通 `boot()`、完整路径模拟、存档 v3 往返与旧版本拒绝；
+   视觉与交互（模态观感、大地图三态、共享节点切换）仍需人工确认。
+
+### 完整可玩路径（实测数字）
+
+| 步 | 区域 | 节点 | 动作 | 耗时 | 体力 |
+|---|---|---|---|---|---|
+| 0 | home | home | 开局 | — | — |
+| 1 | area1 | home | 在共享节点 home 上切到 area1 | 0 | 0 |
+| 2 | area1 | n2 | home → n2（中央大道） | 510 | −1 |
+| 3 | area1 | n5 | n2 → n5（废弃哨塔）**mustResolve** | 600 | −1 |
+| 4 | area1 | n7 | n5 → n7（岔路口）**mustResolve** | 600 | −1 |
+| 5 | area1 | lighthouse | n7 → lighthouse（灯塔）**mustResolve** | 450 | −1 |
+| 6 | area2 | lighthouse | 在共享节点 lighthouse 上切到 area2 | 0 | 0 |
+| 7 | area2 | m1 | lighthouse → m1（枯树林） | 764 | −1 |
+| 8 | area2 | m2 | m1 → m2（碎石路） | 722 | −1 |
+| 9 | area2 | m3 | m2 → m3（断桥） | 722 | −1 |
+| 10 | area2 | goal2 | m3 → goal2（旅者之石）→ 首次到达即 gameOver | 722 | −1 |
+
+合计：移动 8 次、5090 秒、体力 −8；两次区域切换各 0 体力 0 时间。
+
+### 改动规模
+
+| 文件 | 说明 |
+|---|---|
+| `v6/js/map.js` | 数据结构、查询接口、大地图渲染整体重写 |
+| `v6/js/state.js` | 三区域、markVisited、键改 nodeId |
+| `v6/js/main.js` | visitNode、区域切换、拾取弹窗、mustResolve 弹窗 |
+| `v6/js/modal.js` | **新增** |
+| `v6/js/texts.js` | 删 2 个场景、改灯塔、加 mustResolveDesc、加 8 条 UI 文案 |
+| `v6/js/saveSystem.js` | 升 v3 |
+| `v6/js/debug.js` | `/storage` 键、`/help`、`USAGE` |
+| `v6/js/config.js` | 版本号 |
+| `v6/style.css` | 模态样式 |
+
+---## [v1.8.1] — 2026-10-10 —— 手持槽改为「保底物品栏」＋ 5 处改动
 
 **回档点**：`v1.8.1`
 **存档格式**：仍为 **`2`**，**未变更**。v1.8.0 的存档可正常导入——
