@@ -871,8 +871,10 @@ async function importSave() {
 
   const snapshot = save.deserialize(text);
   if (!snapshot) {
-    /* v1 是单区域存档，按需求不提供迁移，单独给一句更准确的提示 */
-    terminal.log(save.peekVersion(text) === 1 ? UI.saveTooOld : UI.saveInvalid);
+    /* v1 / v2 存档结构不兼容，按需求不提供迁移：版本号偏低时给一句更准确的提示 */
+    const version = save.peekVersion(text);
+    const tooOld = Number.isFinite(version) && version < save.SAVE_VERSION;
+    terminal.log(tooOld ? UI.saveTooOld : UI.saveInvalid);
     return;
   }
   if (!window.confirm(UI.saveConfirm)) return;

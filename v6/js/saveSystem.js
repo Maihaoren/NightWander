@@ -1,18 +1,22 @@
 /**
  * saveSystem.js —— 存档序列化 / 反序列化
  * 纯函数：不碰 DOM、不改 state，只做 字符串 <-> 快照对象 的转换与校验。
- * 格式：{ v: 2, data: { ... } } → JSON → Base64
+ * 格式：{ v: 3, data: { ... } } → JSON → Base64
  *
- * v2（多区域）：字段改为 currentArea / mapView / visitedByArea / sheltersByArea /
- * storageCapacityByShelter，不再有 visited / homeStorage / storageCapacity。
- * v1 的单区域存档不提供迁移，加载时返回 null，由 main.js 提示「存档版本过旧」。
+ * v3（区域重构）：区域从 area1/area2 变成 home/area1/area2，节点 id 全局唯一，
+ * 储物键与 mustResolve 键都改用裸 nodeId，并新增 resolvedMustResolve 字段。
+ * v1 / v2 存档结构不兼容，不提供迁移，加载时返回 null，
+ * 由 main.js 按版本号提示「存档版本过旧，无法加载」。
  */
 
-const VERSION = 2;
+const VERSION = 3;
+
+/** 当前存档版本，供 main.js 区分「版本过旧」与「存档无效」 */
+export const SAVE_VERSION = VERSION;
 
 const REQUIRED = ['day', 'elapsedSeconds', 'currentArea', 'mapView', 'currentNode', 'visitedByArea',
   'stamina', 'staminaMax', 'battery', 'storageCapacityByShelter', 'sheltersByArea',
-  'equipped', 'pocket', 'collectedItems', 'usedOptions', 'usedGroups'];
+  'equipped', 'pocket', 'collectedItems', 'usedOptions', 'usedGroups', 'resolvedMustResolve'];
 
 /** 快照 → 存档字符串（Base64） */
 export function serialize(snapshot) {
@@ -53,8 +57,8 @@ export function deserialize(text) {
     if (!Object.values(data.sheltersByArea).every((list) => Array.isArray(list))) return null;
     if (typeof data.storageCapacityByShelter !== 'object' || Array.isArray(data.storageCapacityByShelter)) return null;
 
-    /* resolvedMustResolve 是 v1.8.1 新增字段：不在 REQUIRED 里，旧存档缺它照常可载入 */
-    if (data.resolvedMustResolve !== undefined && !Array.isArray(data.resolvedMustResolve)) return null;
+    /* resolvedMustResolve：v3 起是必需字段，必须是数组 */
+    if (!Array.isArray(data.resolvedMustResolve)) return null;
 
     /* collectedItems 存的是数组，还原成 Set */
     if (!Array.isArray(data.collectedItems)) return null;
