@@ -47,7 +47,7 @@ const REQUIRES = {
  * 从 SCENES 展开一个节点。
  * 文案（含 mustResolveDesc）一律来自 texts.js；坐标与 items / mustResolve 写在这里。
  */
-function defNode(id, x, y, items, mustResolve) {
+function defNode(id, x, y, items, mustResolve, isDark) {
   const scene = SCENES[id];
   if (!scene) throw new Error(`map.js: SCENES 缺少节点 ${id} 的文案`);
 
@@ -68,6 +68,10 @@ function defNode(id, x, y, items, mustResolve) {
     items: items || [],
     mustResolve: Boolean(mustResolve),          /* 到达后必须先做出一次选择才能离开 */
     mustResolveDesc: scene.mustResolveDesc || '',
+    /* 黑暗地点：身处其中时电量额外流逝，且没电时不能从外面走进去。
+       标记写在节点上而不是「按区域 + 是否入口」推：同一区域将来可以有多个黑暗地点，
+       入口通道（southpass）也就不需要任何特例。 */
+    isDark: Boolean(isDark),
   };
 }
 
@@ -97,6 +101,11 @@ export const NODES = {
   northgate: defNode('northgate', 580, 300, []),  /* newarea1 的东端 / newarea2 的西端（共享） */
   na1_main: defNode('na1_main', 330, 300, ['compass']),
   na2_main: defNode('na2_main', 350, 300, []),
+
+  /* 南面黑暗地带：southpass 是 area1 的南出口 / darkarea 的北入口（共享），
+     dark_core 是区域内部的黑暗地点（isDark = true） */
+  southpass: defNode('southpass', 660, 540, []),        /* 仿 northpass，只是方向朝南 */
+  dark_core: defNode('dark_core', 660, 300, ['darkshard'], false, true),
 };
 
 /* ===============================================================
@@ -150,7 +159,7 @@ export const REGIONS = {
     id: 'area1',
     name: '荒原',
     type: 'region',
-    nodes: ['home', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7', 'lighthouse', 'northpass'],
+    nodes: ['home', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7', 'lighthouse', 'northpass', 'southpass'],
     edges: [
       { from: 'home', to: 'n1' },
       { from: 'home', to: 'n2' },
@@ -163,11 +172,33 @@ export const REGIONS = {
       { from: 'n6', to: 'n7' },
       { from: 'n7', to: 'lighthouse' },
       { from: 'n7', to: 'northpass' },   /* 北出口：从岔路口往北 */
+      { from: 'n7', to: 'southpass' },   /* 南出口：从岔路口往南，通黑暗地带 */
     ],
-    mainRoads: [['home', 'n2'], ['n2', 'n5'], ['n5', 'n7'], ['n7', 'lighthouse'], ['n7', 'northpass']],
-    neighbors: ['home', 'area2', 'newarea2'],
+    mainRoads: [['home', 'n2'], ['n2', 'n5'], ['n5', 'n7'], ['n7', 'lighthouse'],
+      ['n7', 'northpass'], ['n7', 'southpass']],
+    neighbors: ['home', 'area2', 'newarea2', 'darkarea'],
     primaryShelter: 'home',
     unlocked: true,
+  },
+
+  /* 南面新区域：黑暗地带。southpass 是它与 area1 的共享节点（北入口），
+     dark_core 是区域内部的黑暗地点（没电时不能从外面走进去，身处其中电量加速流逝）。 */
+  darkarea: {
+    id: 'darkarea',
+    name: '黑暗地带',
+    type: 'region',
+    nodes: ['southpass', 'dark_core'],
+    edges: [
+      { from: 'southpass', to: 'dark_core' },
+    ],
+    mainRoads: [['southpass', 'dark_core']],
+    neighbors: ['area1'],
+    /* primaryShelter 必须是本区域的节点（强制回家会 visitNode(区域, 该节点)）：
+       没有安全屋节点，就落到北入口，与 newarea2 → northpass 同一套做法。
+       副作用：southpass 因此进了 isShelter 的并集，会像 northpass 一样多出「过夜」选项；
+       但它不回电 —— 回电只认「当前节点是 home」。 */
+    primaryShelter: 'southpass',
+    unlocked: false,                    /* 初始锁定；访问过任一节点即解锁 */
   },
 
   area2: {
@@ -193,6 +224,8 @@ export const REGIONS = {
  * 上排：北面两个新区域。newarea1 在 home 正北、newarea2 在 area1 正北，
  *       所以它们的 x 与宽度都跟正下方那一块对齐，竖向连线才是直的。
  * 下排：原有三块坐标一律未动。
+ * 南面：darkarea 摆在 area1 正南（x 中心对齐 area1 的 x 中心 520），
+ *       与 area1 底边（480）留 20px 空隙给通道标签，且整块不超出画布高 600。
  * 注：现有数据里 home.y(200) 与 area1.y(120) 本来就不相等，
  * 但两者的高度让中心线都落在 y=300，所以「下排在同一水平线上」是成立的；
  * 上排整排压在 y<=110 的空档里，不与下排重叠。
@@ -203,6 +236,7 @@ const REGION_BOX = {
   home: { x: 60, y: 200, w: 200, h: 200 },
   area1: { x: 320, y: 120, w: 400, h: 360 },
   area2: { x: 780, y: 120, w: 180, h: 360 },
+  darkarea: { x: 420, y: 500, w: 200, h: 90 },   /* area1 正南（中心 x 与 area1 对齐） */
 };
 
 /* ===============================================================
@@ -302,6 +336,23 @@ export function isPrimaryShelter(nodeId) {
   return getCurrentRegion().primaryShelter === nodeId;
 }
 
+/**
+ * 黑暗地点：节点数据里的 isDark 标记（目前只有 darkarea 的 dark_core）。
+ * 判定只看节点自己 —— 入口通道（southpass）没有标记，所以永远不受黑暗规则影响。
+ */
+export function isDarkNode(nodeId) {
+  const node = getNode(nodeId);
+  return Boolean(node && node.isDark);
+}
+
+/**
+ * 没电时不能进入黑暗地点：目标节点是黑暗地点、且当前电量 = 0 → 不可点。
+ * 只针对「走进去」这一步；玩家已经在黑暗地点里没电属于另一种情形（main.js 的黑暗归零回家）。
+ */
+export function isNodeBlockedByDarkness(nodeId) {
+  return isDarkNode(nodeId) && game.getBattery() <= 0;
+}
+
 export function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
@@ -368,6 +419,14 @@ const REGION_VIEW_POS = {
   newarea2: {
     northgate: { x: 80, y: 240 },
     northpass: { x: 620, y: 360 },
+  },
+
+  /* darkarea：southpass 在 area1 那侧是南出口（逻辑 y = 540），到了本区域要当【北入口】，
+     所以视觉上抬到 y = 120；dark_core 只在这一区域出现，逻辑坐标 (660,300) 就在它下面，
+     正好读成「北入口 → 往南进入黑暗」，不需要覆盖。
+     逻辑坐标（算费用）一个都没动：southpass(660,540) ↔ dark_core(660,300) = 240 → 720 秒。 */
+  darkarea: {
+    southpass: { x: 660, y: 120 },
   },
 };
 
@@ -670,14 +729,15 @@ function placeTip(el, event) {
 }
 
 /**
- * 悬浮提示的内容：两行，预计耗时 / 到达时间。
- *   电力耗尽 → 返回 null（提示完全不可用，连耗时也不显示）
- *   没有当前节点、或目标就是当前节点 → 返回 null
- *   路径算不出来（不可达）→ 返回 null
- * 不可点节点根本不会绑悬浮事件，所以走不到这里。
+ * 悬浮提示的内容。
+ * 有电：两行 —— 预计耗时 / 到达时间
+ * 没电：一行 —— 「没电了，预测不了时间。」（文案在 texts.js 的 UI.tipNoBattery）
+ *   没有当前节点、或目标就是当前节点、或路径算不出来（不可达）→ 返回 null（不显示提示）
+ * 「当前所在」与「已访问但走不到」的节点不会绑悬浮事件；没电的黑暗地点是例外：
+ * 它不可点，但会绑事件，为的是能解释一句为什么不能去（见 renderArea）。
  */
 function buildTipLines(toId, regionId) {
-  if (game.getBattery() <= 0) return null;
+  if (game.getBattery() <= 0) return [UI.tipNoBattery];         /* 没电：连耗时也预测不了 */
 
   const from = currentNode;
   if (!from || from === toId) return null;
@@ -694,8 +754,11 @@ function showTip(event, toId, regionId) {
   if (!lines) { hideTip(); return; }
 
   const el = tipElement();
-  if (tipFor !== toId) {          /* 目标换了才重建两行文字；同一目标不重建，避免 mousemove 抖动 */
-    tipFor = toId;
+  /* 目标或内容变了才重建文字（没电两行变一行也要重建）；
+     同一目标 + 同一内容只挪位置，避免 mousemove 反复改 DOM */
+  const key = `${toId}|${lines.join('\u0001')}`;
+  if (tipFor !== key) {
+    tipFor = key;
     el.textContent = '';
     for (const text of lines) {
       const row = document.createElement('div');
@@ -867,10 +930,14 @@ function renderArea(regionId) {
   /* 【机制】电量耗尽时视野再收缩一层：只保留与当前节点有直接边的节点（当前节点自己当然要在） */
   const inSight = (id) => !noBattery || !here || id === here || hasDirectEdge(regionId, here, id);
 
-  /* 四种状态；null = 不渲染 */
+  /* 五种状态；null = 不渲染
+     darkblock（v1.8.8 新增）：没电时的黑暗地点 —— 看得见、不能去。
+     它拿 is-blocked 的既有样式（灰 + 虚线 + 降透明），未访问时再叠 is-unseen 保留菱形，
+     所以既不显示名字（不泄露没走过的地图），又明显区别于可点的琥珀菱形。 */
   const stateOf = (id) => {
     if (!inSight(id)) return null;                      /* 没电被隐藏：不可点，也没有悬浮提示 */
     if (here && id === here) return 'current';          /* 当前位置：有标识，不参与可点性判断 */
+    if (isNodeBlockedByDarkness(id)) return 'darkblock';
     if (visited.has(id)) return reachable.has(id) ? 'visited' : 'blocked';
     /* 【正式机制 A】未访问：只有与当前节点直接相邻才显示菱形；没有当前节点时退回旧规则 */
     if (!here) return computeClickable(regionId, visited).has(id) ? 'unseen' : null;
@@ -922,7 +989,11 @@ function renderArea(regionId) {
     if (st === 'current') classes.push('is-visited', 'is-current');
     else if (st === 'visited') classes.push('is-visited');
     else if (st === 'blocked') classes.push('is-blocked');
-    else classes.push('is-open', 'is-unseen');
+    else if (st === 'darkblock') {
+      /* 没电的黑暗地点：已访问过就画实心块（名字本来就认识），没访问过保留菱形但不给 pointer 光标 */
+      if (visited.has(id)) classes.push('is-visited', 'is-blocked');
+      else classes.push('is-unseen', 'is-blocked');
+    } else classes.push('is-open', 'is-unseen');
 
     const group = svgNode('g', { class: classes.join(' '), 'data-id': id });
     const p = drawPos(node, regionId);       /* 绘制坐标 = 该区域的视觉坐标 + 固定噪声 */
@@ -953,8 +1024,11 @@ function renderArea(regionId) {
     layers.nodes.appendChild(group);
     nodeEls.set(id, group);
 
-    /* 悬浮提示只给可点节点（visited / unseen）；blocked 与当前节点都不是可点目标 */
-    if (st === 'visited' || st === 'unseen') {
+    /* 悬浮提示只给可点节点（visited / unseen）。
+       darkblock 是唯一例外：它不可点，但绑上事件只为了说清楚「没电了，预测不了时间。」
+       （buildTipLines 在没电时返回那一行，所以这里不需要额外分支）。
+       blocked（已访问但走不到）与 current（当前所在）依旧不绑。 */
+    if (st === 'visited' || st === 'unseen' || st === 'darkblock') {
       group.addEventListener('mouseenter', (ev) => showTip(ev, id, regionId));
       group.addEventListener('mousemove', (ev) => showTip(ev, id, regionId));
       group.addEventListener('mouseleave', hideTip);

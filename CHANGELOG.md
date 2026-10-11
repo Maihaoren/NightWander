@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.8.7` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.8.8` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `3` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -34,6 +34,155 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.8.8] — 2026-10-11 —— 2 个 bug + 电量流逝机制重做 + 新增「黑暗地带」区域 + 黑暗地点规则
+
+**回档点**：`v1.8.8`
+
+### 修复
+
+**1. home 回电判断从「区域」改成「节点」（`main.js`）**
+
+- 症状：站在 `area1` / `newarea1` 里的 `home` 节点过夜**不回电**，只有 `home` 区域里的 `home` 节点回电。
+- 根因：v1.8.5 实现「只有家能回电」时，判断写成了 `game.getCurrentArea() === 'home'`。但 `home` 是**共享节点**，同时属于 `home` / `area1` / `newarea1` 三个区域；按区域判断等于把「同一个家」在别的区域里当成了别的地方。
+- 修复：`main.js settleNight()` 改为 `game.getCurrentNode() === RECHARGE_NODE`，常量 `RECHARGE_AREA = 'home'` → `RECHARGE_NODE = HOME_ID`（节点 id 全局唯一）。灯塔 / 北关口 / 南关口等安全屋照旧不回电。
+- 注：请求里写的文件是 `timeSystem.js`，实际结算回电逻辑在 `main.js` 的 `settleNight()`，只改了那里。
+
+**2. 没电时悬浮提示显示说明文案（`map.js` + `texts.js`）**
+
+- 症状：电量归零后悬浮节点，提示**完全静默**，玩家不知道自己为什么点不动。
+- 修复：`buildTipLines()` 在 `game.getBattery() <= 0` 时不再 `return null`，而是返回一行 `UI.tipNoBattery`（「没电了，预测不了时间。」）—— **只这一行**，不给预计耗时与到达时间。不可点节点（当前所在 / 已访问但走不到）依旧不绑悬浮事件、没有任何提示。
+- 配套：`showTip()` 的重建判断由「目标 id 变了没」改成「目标 id + 文案变了没」，否则没电时两行变一行不会重绘。
+
+### 新增
+
+**1. 新增「黑暗地带」区域 `darkarea`（`map.js` + `texts.js`）**
+
+| 项 | 值 |
+|---|---|
+| `regionId` | `darkarea` |
+| 显示名 | 黑暗地带 |
+| `nodes` | `['southpass', 'dark_core']` |
+| `edges` | `southpass ↔ dark_core`（`mainRoads` 同一条） |
+| `neighbors` | `['area1']`（`area1.neighbors` 同步加上 `'darkarea'`） |
+| `primaryShelter` | `'southpass'`（**必须是本区域节点**：强制回家会 `visitNode(区域, 该节点)`；没有安全屋节点就落到北入口，与 `newarea2 → northpass` 同一套） |
+| `unlocked` | `false`（访问过任一节点即解锁） |
+| 大地图位置 | `REGION_BOX.darkarea = { x: 420, y: 500, w: 200, h: 90 }`，在 `area1` 正南（中心 x=520 对齐），与 `area1` 底边留 20px 给通道标签，整块不出画布 |
+
+节点（`NODES` 逻辑坐标，另见 `REGION_VIEW_POS`）：
+
+| 节点 | 逻辑坐标 | 视觉坐标 | 说明 |
+|---|---|---|---|
+| `southpass` 南关口 | `(660, 540)` | `area1` 里就是 `(660,540)`（n7 正南）；`darkarea` 里覆盖为 `(660,120)`（北入口） | **共享节点**，同时出现在 `area1.nodes` 与 `darkarea.nodes` |
+| `dark_core` 黑暗核心 | `(660, 300)` | 同逻辑坐标（在 `southpass` 下方） | **黑暗地点**，`isDark: true` |
+
+连接关系：`area1.n7 (650,300)` ↔ `southpass (660,540)` ↔ `dark_core (660,300)`。
+`n7→southpass` 的边耗时 **721 秒**，与北出口 `n7→northpass` 完全对称；`southpass→dark_core` = **720 秒**。
+
+内容（测试性）：`dark_core` 挂 1 件测试物品 `darkshard`（黑曜石碎片，形态对齐 `compass`／`oldmap`：无槽位）+ 2 个测试选项（「伸手在黑暗里摸索」1800 秒、「屏住呼吸听一听」900 秒可重复）。`dark_core` **没有** `mustResolve`，可以自由进出。
+
+**2. 黑暗地点标记：`node.isDark`（`map.js`）**
+
+- 字段名 **`isDark`**，在 `defNode(id, x, y, items, mustResolve, isDark)` 的第 6 个形参上写入节点对象（默认 `false`）。
+- 选这个方案而不是「`regionId === 'darkarea'` 且非入口节点」：同一区域将来可以有多个黑暗地点，入口通道也就不需要任何特例判断；查询统一走 `isDarkNode(nodeId)`。
+
+**3. 电量流逝机制重做（`config.js` + `timeSystem.js` + `main.js`）**
+
+- **废弃**「电量上限随时间衰减」（`cap = 10 + 90 × (1 − elapsed / NIGHT_DURATION)`）：`BATTERY_CAP_FLOOR` / `BATTERY_CAP_CEIL` 两个常量与函数 `computeBatteryCap()` 一并删除。
+- 新规则**只削当前电量，上限恒为 `BATTERY_MAX`（100%）**，完整公式：
+
+  ```
+  速率(百分点/游戏小时) = BATTERY_NATURAL_DRAIN_PER_HOUR              （2）
+                        + （当前节点 isDark ? BATTERY_DARK_AREA_EXTRA_DRAIN_PER_HOUR : 0）   （+1）
+
+  流逝扣除   = 游戏内流逝秒数 / 3600 × 速率            ← 连续积分，下限 0
+  跨天扣除   = BATTERY_DAY_CHANGE_DRAIN                （5，天数 +1 时一次性）
+  当前电量   = clamp(当前电量 − 流逝扣除 − 跨天扣除, 0, BATTERY_MAX)
+  ```
+
+- 两条时间推进路径共用同一个扣除函数 `drainBatteryForGameSeconds()`：`tick()`（`Date.now` 真实差值 × `TIME_SPEED` → 游戏秒）与 `advanceTime()`（移动 / 选项的离散秒数），所以速率规则只有一份实现。
+- 离散扣电的黑暗判定用「**扣电那一刻玩家所在的节点**」：离开黑暗地点那一步算黑暗速率（人还在黑暗里），走进黑暗地点那一步算自然速率。在家节点时间不流逝，所以也不扣电。
+- 跨天扣电：`time.drainBatteryOnDayChange()`，由 `main.js` 在天数 +1 的两处调用（`settleNight()`、`onNightEnd()`）。**在 `settleNight()` 里刻意排在「回家回电」之前** —— 于是「在家过夜（含黑暗断电被送回 home）」是满电开局，而在灯塔 / 南关口过夜才会真扣掉这 5%。
+- 倒计时/状态栏显示不变（`电量 N%`，`Math.floor`），下限 0 由 `state.setBattery()` 原有的 `Math.max(0, ...)` 保证，不会出现负数。
+
+**4. 黑暗地点电量归零 → 强制回家，但不扣体力上限（`timeSystem.js` + `main.js` + `texts.js`）**
+
+- `timeSystem.js` 新增两个注入口（timeSystem 不认识地图，也不该认识游戏规则；直接 `import map.js` 会与 `map.js → timeSystem.js` 形成循环依赖）：
+  - `setDarkNodeResolver(fn)` —— 「这个节点是黑暗地点吗」，决定流逝速率；`main.js` 在 `boot()` 里注入 `isDarkNode`。
+  - `setOnBatteryEmpty(fn)` —— 「流逝中电量掉到 0 了」；`main.js` 注入 `onBatteryCollapse`。
+- `main.js` 新增 `onBatteryCollapse()`，伪代码：
+
+  ```
+  onBatteryCollapse():
+      if 游戏已结束            → return false
+      if 当前电量 > 0          → return false
+      node = 当前节点
+      if node 不是 isDark      → return false        # 普通地点没电只是视野收缩
+
+      终端清队列 + 打印 UI.darkCollapse（「你在黑暗中失去了意识……」）
+      visitNode('home', 'home')                      # 1 传送：区域与节点都换成 home
+      settleNight()                                  # 2 结算：天数 +1 / 时间归零 / 体力回满 / 电量回满
+                                                     #   ← 这里【没有】setStaminaMax()，体力上限一分不扣
+      if staminaMax <= STAMINA_MIN:                  # 3 沿用原顺序：先传送+结算，再判 gameOver
+          gameOver = true; 打印 UI.gameOverStamina; 停时钟; 锁终端; redrawShelterQuietly()
+          return true
+      arriveAt(getNode('home'))                      # 4 与体力强制回家一致的到达流程（不 await）
+      return true
+  ```
+
+- 全程同步（tick 的定时器回调等不了 `await`），用到的 `visitNode` / `settleNight` / `redrawShelterQuietly` 本来就都是同步的；只有最后的 `arriveAt()` 是即发即忘。
+- 三个触发点：① 流逝扣电（tick / `advanceTime`）通过回调命中；② 选项自带的 `batteryCost` 直接扣到 0（`onOptionClick` 里补一次检测）；③ 走进黑暗地点那一刻（`travelTo` 在 `visitNode` 之后补一次检测，覆盖「路上刚好走干、落点就是黑暗地点」）。
+- 打断处理沿用既有的 `nightEnded` 写法：新增模块级 `batteryCollapsed` 标志，`travelTo` / `onOptionClick` 在动作开始时清零、被打断时不再执行选项效果、不再打印到达。
+
+**5. 没电时禁止进入黑暗地点（`map.js` + `main.js`）**
+
+- `map.js` 新增 `isNodeBlockedByDarkness(nodeId)` = `isDarkNode(nodeId) && game.getBattery() <= 0`。
+- 可点性：`travelTo()` 在原有可点性判断之前加一行 `if (isNodeBlockedByDarkness(id)) return;`（静默拒绝，与其它不可点情形一致）。`southpass` 没有 `isDark` 标记，因此作为通道不受限制。
+- 渲染：`renderArea()` 的状态机新增第 5 种状态 `darkblock` ——
+  - 已访问过 → `is-visited is-blocked`
+  - 没访问过 → `is-unseen is-blocked`（保留菱形、不显示名字，不泄露没走过的地图），且**不给** `is-open`（不加 pointer 光标）
+  - `is-blocked` 就是 v1.8.6 那套「灰 + 虚线 + 降透明度」的特殊样式。
+- 悬浮：`darkblock` 是全项目**唯一**「不可点但仍绑悬浮事件」的状态，绑它只是为了能说出理由 —— 电量 0 时 `buildTipLines()` 返回「没电了，预测不了时间。」，不需要额外分支。
+- 玩家**已经在** `dark_core` 里没电属于另一种情形，走上面第 4 条（断电回家），不属于本规则。
+
+### 变更
+
+| 文件 | 改动 |
+|---|---|
+| `v6/js/config.js` | 删 `BATTERY_CAP_FLOOR` / `BATTERY_CAP_CEIL`；加 `BATTERY_NATURAL_DRAIN_PER_HOUR = 2`、`BATTERY_DARK_AREA_EXTRA_DRAIN_PER_HOUR = 1`、`BATTERY_DAY_CHANGE_DRAIN = 5`；`BATTERY_MAX` 注释改为「电量上限，不随时间衰减」；`GAME_VERSION` → `v1.8.8` |
+| `v6/js/timeSystem.js` | 删 `computeBatteryCap()` 与 cap 逻辑；加 `setOnBatteryEmpty()` / `setDarkNodeResolver()` / `drainBatteryOnDayChange()` 与内部 `batteryDrainPerHour()` / `drainBatteryForGameSeconds()`；`tick()` 与 `advanceTime()` 都接入扣电 |
+| `v6/js/map.js` | `defNode()` 增加第 6 个形参 `isDark`；`NODES` 加 `southpass` / `dark_core`；`REGIONS` 加 `darkarea`，`area1` 加 `southpass` 节点 / `n7→southpass` 边 / `neighbors` 加 `'darkarea'`；`REGION_BOX` 加 `darkarea`；`REGION_VIEW_POS` 加 `darkarea`；加导出 `isDarkNode()` / `isNodeBlockedByDarkness()`；`buildTipLines()` 没电返回说明行；`showTip()` 按「目标 + 文案」重建；`renderArea()` 状态机加 `darkblock` |
+| `v6/js/texts.js` | 加 `UI.tipNoBattery` / `UI.darkCollapse`；`ITEMS` 加 `darkshard`；`SCENES` 加 `southpass` / `dark_core`（各 12 行 ASCII） |
+| `v6/js/main.js` | `RECHARGE_AREA` → `RECHARGE_NODE`，`settleNight()` 回电改按节点；加 `batteryCollapsed` 标志与 `onBatteryCollapse()`；`travelTo()` 加没电禁入黑暗与两处断电检测；`onOptionClick()` 加断电检测与打断处理；`onNightEnd()` / `settleNight()` 加跨天扣电；`boot()` 注入两个 timeSystem 钩子 |
+| `HANDOFF.md` | 游戏版本同步 `v1.8.8` |
+
+**不需要改的文件（已核对）**：
+
+- `v6/js/state.js`：`visitedByArea` 是**惰性建 key 的动态对象**（`getVisitedByArea()` 首次访问新区域时建空 `Set`），新区域 `darkarea` 直接可用；`setBattery()` 本来就是 `Math.max(0, Math.min(BATTERY_MAX, value))`，负值与超上限都夹得住。**本轮未改动这个文件。**
+- `v6/js/saveSystem.js`：只做结构性校验（`visitedByArea` 必须是对象、每个值必须是数组），不枚举区域 id，新区域只是多一个动态 key。**存档版本仍是 `VERSION = 3`，旧存档照常加载。**
+
+### 验证
+
+- 模块链接检查（10 个模块 OK，`main` 需 DOM）、DOM 桩 `boot()` 无异常、11 个 js 文件 `node --check` 全部通过。
+- 59 项断言全部通过（`.tools/nw_r9_check.mjs`）：旧电量常量与 `computeBatteryCap` 已彻底消失；自然速率 1 小时 −2%、黑暗中 −3%、离开黑暗立刻恢复 −2%；跨天 −5%；下限不为负；电量归零只回调一次；`southpass` 的共享关系与 `n7→southpass = n7→northpass = 721`；`isDark` / `darkblock` 类名 / 没电悬浮文案；渲染层没电时 `dark_core` 得到 `is-blocked` 且不给 `is-open`。
+- 端到端模拟（`.tools/nw_r9_e2e.mjs`，在 DOM 桩里真跑 `boot()` + 真跑 `tick()`，并用可控 `Date.now` 推进游戏时间）：
+  - 站在 **area1 的 home 节点**过夜 → 电量回到 100%（区域仍是 `area1`）；站在 **area1 的 lighthouse** 过夜 → 不回电且照扣跨天 5%（40 → 35）。
+  - 在 `dark_core` 里跑满 1 小时 → −3%；把电量压到 1% 再跑 1 小时 → 触发断电回家：节点与区域都变成 `home`、天数 +1、时间归零、体力与电量回满、**`staminaMax` 一分没扣**、终端依次打印「你在黑暗中失去了意识……」与「已经到达 家」、没有 gameOver。
+  - 同一套时间流逝在非黑暗节点 1 小时只扣 2%；10 分钟对照实测黑暗 : 自然 = **1.5 : 1**。
+  - 站在南关口、电量 0：`dark_core` 显示为不可点样式、点击无效、悬浮给出「没电了，预测不了时间。」；有电时同样的点击正常走进 `dark_core` 并打印移动横幅。
+  - 回归：`n7` 视角下南关口是相邻菱形、能走过去并解锁 `darkarea`；存档往返保留 `darkarea` 的访问记录；存档版本仍为 3。
+- 绘制坐标实测：大地图 `darkarea` 矩形 `(420,500)-(620,590)`，中心 x 与 `area1` 对齐、在 `area1` 正下方、不出画布、与 `area1` 底边留 20px；通道线与标签「南关口」都正常落在空隙里。区域地图里南关口在上、黑暗核心在下（北入口 → 往南进入黑暗）。
+
+### 已知限制 / 遗留
+
+- **`southpass` 因为要当 `darkarea.primaryShelter` 而进了 `isShelter()` 的并集**，于是它会像 `northpass` 一样多出「过夜 / 稍作停留」选项。这是「`primaryShelter` 必须是本区域节点」这条既有不变式带来的副作用；它**不回电**（回电只认 `home` 节点）。
+- **黑暗断电回家后想去黑暗地点，可能被自己的规则挡一次**：如果在门口把电量刚好走干，`dark_core` 会立刻变成不可点，必须回 home 过夜补电再去。这是问题 7 的直接后果，未加特例。
+- 电量流逝的速率只按「当前节点」判定，不区分「在黑暗里待着」与「从黑暗往外走的路上」：后者也算黑暗速率（见上面的判定说明）。
+- 黑暗额外流逝默认 1%/h，在一夜 10 小时的尺度下只额外吃掉 10%，数值手感（以及是否该让黑暗地带更危险）待后续调参，常量都在 `config.js`。
+- 预先存在的、本轮**未处理**的问题：`m1`（枯树林）的 ASCII 图是 **11 行**，与项目「12 行」的约定不符（其余 18 个场景都是 12 行）。
+- 浏览器内的实际观感（黑暗地带的配色、没电视野收缩 + 黑暗禁入叠加后的可读性）仍需用户实测；本机没有浏览器自动化。
 
 ---
 

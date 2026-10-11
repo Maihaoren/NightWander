@@ -14,6 +14,7 @@ import {
   isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
   isSharedNode, primaryShelterOf, getVisitedIn,
   reachableVisited, hasDirectEdge, calcMoveDuration, clearMoveDurationCache, REGIONS, HOME_ID,
+  isDarkNode, isNodeBlockedByDarkness,
 } from './map.js';
 import * as terminal from './terminal.js';
 import * as modal from './modal.js';
@@ -28,10 +29,16 @@ const THEME_KEY = 'nightwander:theme';
 /** 终点节点：首次到达即结束。旧版的 GOAL_ID 已随 map.js 重写移除，终点改为 area2 的旅者之石 */
 const GOAL2_ID = 'goal2';
 
-/** 只有这个「区域」里过夜才回电；灯塔 / 北关口等其他安全屋过夜不回电 */
-const RECHARGE_AREA = 'home';
+/**
+ * 回电地点：只有【家节点】。v1.8.5 起这里写的是「当前区域是 home」，
+ * 于是站在 area1 / newarea1 里的 home 节点过夜不回电 —— 那一版按区域判断是错的。
+ * 节点 id 全局唯一，所以按节点判断：走到哪个区域的 home，都在自己家里。
+ * 灯塔 / 北关口 / 南关口这些安全屋不回电。
+ */
+const RECHARGE_NODE = HOME_ID;
 
 let nightEnded = false;      /* 本轮移动/选项期间是否刚好天亮了 */
+let batteryCollapsed = false;/* 本轮移动/选项期间是否触发了「黑暗地点断电回家」 */
 let sceneEl = null;
 let pendingMove = null;      /* 本次移动的 { fromId, toId, cost }，供 arriveAt 打印移动横幅 */
 
@@ -477,6 +484,10 @@ async function travelTo(id) {
   /* 只能在当前区域内移动 */
   if (!getNodeIds(area).includes(id)) return;
 
+  /* 没电时不能进入黑暗地点：点击一律无效（静默，与其它不可点情形一致）。
+     southpass 只是通道、没有 isDark 标记，所以不受这条限制。 */
+  if (isNodeBlockedByDarkness(id)) return;
+
   /* 可点性：已访问的走「已探明路径连通」，未访问的只看是否与当前节点直接相邻。
      不可点就静默返回 —— 不移动、不扣体力、不推时间、不弹提示 */
   const here = game.getCurrentNode();
@@ -496,13 +507,18 @@ async function travelTo(id) {
   pendingMove = { fromId: here, toId: id, seconds: move.seconds, display: move.display };
 
   nightEnded = false;
+  batteryCollapsed = false;
   /* 3 扣体力：0 只是「筋疲力尽」的提示点，负值才触发强制回家 */
   game.spendStamina(MOVE_STAMINA_COST);
   if (game.getStamina() === 0) terminal.log(UI.exhausted);
   time.advanceTime(move.seconds);
   if (nightEnded) return;                            /* 途中天亮：已被强制送回安全屋 */
+  /* 路上把电量走干了、而出发地就是黑暗地点（从黑暗里往外走）：已在流逝回调里送回 home */
+  if (batteryCollapsed) { pendingMove = null; return; }
 
   visitNode(area, id);                               /* 4 共享节点会在所属的每个区域里都标记 */
+  /* 4.5 落点就是黑暗地点且电量已经见底（刚好在路上走干）：走黑暗断电回家，不再打印到达 */
+  if (onBatteryCollapse()) { pendingMove = null; return; }
 
   await arriveAt(node);                              /* 5 正常到达流程 */
   if (game.isGameOver()) return;
@@ -795,8 +811,12 @@ async function onOptionClick(index) {
   }
 
   nightEnded = false;
+  batteryCollapsed = false;
   game.spendBattery(batteryCost);                    /* 2 */
   time.advanceTime(option.timeCost || 0);
+  /* 2.5 选项自带的 batteryCost 直接把电量用干、人又站在黑暗地点：
+         advanceTime 只在「有流逝」时才会回调，所以这里补一次检测 */
+  if (!batteryCollapsed) onBatteryCollapse();
 
   terminal.log(UI.echo(option.text));                                      /* 回看：> 选项文本 */
   game.markOptionUsed(node.id, option.fullIndex, option.perDay === true);  /* 3 */
@@ -805,7 +825,8 @@ async function onOptionClick(index) {
   /* mustResolve：做出任意一次选择即视为解除 */
   if (node.mustResolve) game.markMustResolveResolved(node.id);
 
-  if (!nightEnded) await option.handler(option, node);           /* 4 */
+  /* 4 被打断（天亮 / 黑暗断电）时不再执行选项本身的效果 —— 与 nightEnded 同一套处理 */
+  if (!nightEnded && !batteryCollapsed) await option.handler(option, node);   /* 4 */
 
   refreshButtons();                                  /* 5 */
   renderStatusBar();
@@ -859,6 +880,7 @@ function onNightEnd() {
 
   /* 天亮时人在安全屋（正常流程不会走到）：天数 +1 并把当晚计时归零，否则时钟会卡在 06:00 */
   game.setDay(game.getDay() + 1);
+  time.drainBatteryOnDayChange();          /* 跨天同样扣一笔（这里没有回电，所以一定会扣到） */
   game.setElapsedSeconds(0);
   time.startClock(onNightEnd);
   renderStatusBar();
@@ -904,15 +926,70 @@ function redrawShelterQuietly() {
 }
 
 /**
+ * 黑暗地点断电：身处黑暗地点（isDark 节点）时电量归零 ——
+ *   送回 home + 天数 +1 + 时间归零 + 体力回满 + 电量回满，
+ *   但**不扣体力上限**（这是与体力归零强制回家的唯一区别），所以不会因此 gameOver。
+ *
+ * 全程同步：tick 里的电量流逝是定时器回调，等不了 await；而用到的
+ * visitNode / settleNight / redrawShelterQuietly 本来就都是同步的。
+ *
+ * 触发点（都是「电量已经为 0」这一件事的不同来源）：
+ *   1) timeSystem 的流逝扣电（tick 连续积分 / advanceTime 离散）→ 通过 setOnBatteryEmpty 回调
+ *   2) 选项自带的 batteryCost 直接扣到 0
+ *   3) 走进黑暗地点那一刻（路上扣到 0，落点就是黑暗地点）
+ *
+ * @returns {boolean} 是否真的执行了断电回家（没电但不在黑暗地点 = false，只走视野收缩）
+ */
+function onBatteryCollapse() {
+  if (game.isGameOver()) return false;
+  if (game.getBattery() > 0) return false;
+
+  const node = getNode(game.getCurrentNode());
+  if (!node || !isDarkNode(node.id)) return false;   /* 非黑暗地点：没电只是视野收缩，不做任何事 */
+
+  terminal.clearQueue();
+  terminal.log(UI.darkCollapse);
+
+  /* 1 传送回 home：区域也要跟着换（home 是 home 区域唯一的节点） */
+  visitNode(HOME_ID, HOME_ID);
+
+  /* 2 结算：天数 +1、时间归零、体力回满、电量回满（当前节点是 home，回电条件成立）。
+       注意这里【没有】setStaminaMax(...)，体力上限一分不扣。 */
+  settleNight();
+
+  /* 3 再判断 gameOver（沿用原顺序）。体力上限没被扣，所以只有本来就已经触底才可能成立 */
+  if (game.getStaminaMax() <= STAMINA_MIN) {
+    game.setGameOver(true);
+    terminal.log(UI.gameOverStamina);
+    time.stopClock();
+    terminal.setLocked(true);
+    redrawShelterQuietly();                          /* 人已经在家里，静默重绘（同体力强制回家那一支） */
+    batteryCollapsed = true;
+    return true;
+  }
+
+  /* 4 正常情况与体力强制回家保持一致：照常走一次到达流程，让玩家在终端里看到自己回到了家。
+       这里刻意不 await —— 本函数是从定时器回调或 travelTo 里【同步】调用的，
+       到达流程的后续重绘彼此独立（与 debugContext.goto 的用法相同）。 */
+  arriveAt(getNode(HOME_ID));
+  batteryCollapsed = true;
+  return true;
+}
+
+/**
  * 结算流程：主动回家与强制回家共用。
  * 这是修改 state.day 的唯一游戏逻辑位置（main.js / settleNight）。
  */
 function settleNight() {
   game.setDay(game.getDay() + 1);        /* 1 */
+  /* 1.5 跨天一次性扣电：必须在「回家回电」之前，
+         这样在家过夜（含黑暗断电被送回 home）才是满电开局，在灯塔/南关口过夜才会真扣掉这 5% */
+  time.drainBatteryOnDayChange();
   game.setElapsedSeconds(0);             /* 2 */
   game.setStamina(game.getStaminaMax()); /* 3 */
-  /* 4 只有「家」区域才回电：灯塔 / 北关口这些安全屋过夜不回电（电量上限随时间衰减的逻辑不变） */
-  if (game.getCurrentArea() === RECHARGE_AREA) game.setBattery(BATTERY_MAX);
+  /* 4 只有【家节点】回电：灯塔 / 北关口 / 南关口这些安全屋过夜不回电。
+       按节点判断，所以在 area1 / newarea1 里走到 home 也算在家。 */
+  if (game.getCurrentNode() === RECHARGE_NODE) game.setBattery(BATTERY_MAX);
   game.clearPerDayOptions();             /* 5 清空 perDay 已用项 */
   time.resetClock();                     /* 时间回到 20:00:00 */
   time.startClock(onNightEnd);           /* 夜晚结束时时钟被停过，这里重新驱动 */
@@ -1071,6 +1148,10 @@ function boot() {
 
   initMap(document.getElementById('map'), { onNodeClick: travelTo, onRegionClick });
   terminal.initTerminal({ onSubmit: handleCommand });
+
+  /* 注入两个只有 main 才知道的判定：timeSystem 不认识地图，也不该认识游戏规则 */
+  time.setDarkNodeResolver(isDarkNode);   /* 「这个节点是黑暗地点吗」→ 决定电量流逝速率 */
+  time.setOnBatteryEmpty(onBatteryCollapse); /* 「流逝中电量掉到 0 了」→ 黑暗地点走断电回家 */
 
   const worldButton = document.getElementById('back-to-world');
   if (worldButton) worldButton.addEventListener('click', onBackButtonClick);

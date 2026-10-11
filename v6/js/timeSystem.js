@@ -1,18 +1,40 @@
 /**
- * timeSystem.js —— 时间与天数推进、格式化、夜晚结束触发
+ * timeSystem.js —— 时间与天数推进、电量流逝、格式化、夜晚结束触发
  * 只负责时间的推进与格式化，不判断游戏规则。
  *
  * 推进方案：时间戳差值。每次 tick 用 Date.now() 的真实差值累加，
  * 所以标签页被节流、切回前台时会一次性补足。
  * 在家节点时时间不流逝。
+ *
+ * 电量流逝（v1.8.8 起）：只削当前电量，上限恒为 BATTERY_MAX；
+ * 按游戏内秒数连续积分，黑暗节点额外加速，跨天再一次性扣一笔。
+ * 速率与判定细节见下面的「电量流逝（连续积分）」注释块。
  */
 
-import { NIGHT_START_HOUR, NIGHT_DURATION_SEC, TIME_SPEED, TICK_INTERVAL_MS, BATTERY_CAP_FLOOR, BATTERY_CAP_CEIL } from './config.js';
+import {
+  NIGHT_START_HOUR, NIGHT_DURATION_SEC, TIME_SPEED, TICK_INTERVAL_MS,
+  BATTERY_NATURAL_DRAIN_PER_HOUR, BATTERY_DARK_AREA_EXTRA_DRAIN_PER_HOUR, BATTERY_DAY_CHANGE_DRAIN,
+} from './config.js';
 import * as game from './state.js';
 
 let timerId = null;
 let lastTickTime = 0;
 let onNightEnd = null;
+
+/* 电量归零回调：timeSystem 不认识地图与游戏规则，由 main.js 注入。
+   电量在流逝中掉到 0 时调一次（黑暗地点的强制回家走这个钩子）。 */
+let onBatteryEmpty = null;
+
+/* 黑暗地点判定：同样由 main.js 注入（map.js 的节点数据只有 main 认识），默认「都不黑」 */
+let darkNodeResolver = () => false;
+
+export function setOnBatteryEmpty(callback) {
+  onBatteryEmpty = typeof callback === 'function' ? callback : null;
+}
+
+export function setDarkNodeResolver(resolver) {
+  darkNodeResolver = typeof resolver === 'function' ? resolver : () => false;
+}
 
 export function startClock(callback) {
   if (typeof callback === 'function') onNightEnd = callback;
@@ -33,10 +55,40 @@ export function resetClock() {
   lastTickTime = Date.now();
 }
 
-/** 20:00 → 06:00 之间电量上限从 BATTERY_CAP_CEIL 线性降到 BATTERY_CAP_FLOOR */
-export function computeBatteryCap(elapsedSeconds) {
-  const ratio = Math.min(1, Math.max(0, 1 - elapsedSeconds / NIGHT_DURATION_SEC));
-  return BATTERY_CAP_FLOOR + (BATTERY_CAP_CEIL - BATTERY_CAP_FLOOR) * ratio;
+/* ---------------- 电量流逝（连续积分） ----------------
+
+   速率 = BATTERY_NATURAL_DRAIN_PER_HOUR
+        + （当前节点是黑暗地点 ? BATTERY_DARK_AREA_EXTRA_DRAIN_PER_HOUR : 0）   单位：百分点 / 游戏小时
+
+   扣除量 = 流逝的游戏内秒数 / 3600 × 速率。
+   时间推进有两条路：tick（按 Date.now 真实差值连续积分）与 advanceTime（离散：移动 / 选项），
+   两条路都调用这里的 drainBatteryForGameSeconds()，所以速率规则只有一份。
+
+   只削【当前电量】，上限恒为 BATTERY_MAX；下限 0 由 state.setBattery 夹住。
+   离散扣时的黑暗判定用「扣电那一刻玩家所在的节点」：
+   离开黑暗地点那一步算黑暗速率（人还在黑暗里），走进黑暗地点那一步算自然速率。
+*/
+function batteryDrainPerHour() {
+  const dark = darkNodeResolver(game.getCurrentNode());
+  return BATTERY_NATURAL_DRAIN_PER_HOUR + (dark ? BATTERY_DARK_AREA_EXTRA_DRAIN_PER_HOUR : 0);
+}
+
+/** 按【游戏内秒数】连续积分扣当前电量；掉到 0 时通知 main.js */
+function drainBatteryForGameSeconds(gameSeconds) {
+  const sec = Number(gameSeconds);
+  if (!Number.isFinite(sec) || sec <= 0) return;
+  if (game.getBattery() <= 0) return;                 /* 已经没电：不再重复扣，也不重复触发 */
+
+  game.spendBattery((sec / 3600) * batteryDrainPerHour());
+
+  if (game.getBattery() <= 0 && onBatteryEmpty) onBatteryEmpty();
+}
+
+/** 跨天（天数 +1）时一次性扣电。由 main.js 在结算流程里调用，调用点必须在「回家回电」之前 */
+export function drainBatteryOnDayChange() {
+  if (game.getBattery() <= 0) return;
+  game.spendBattery(BATTERY_DAY_CHANGE_DRAIN);
+  if (game.getBattery() <= 0 && onBatteryEmpty) onBatteryEmpty();
 }
 
 function tick() {
@@ -47,11 +99,11 @@ function tick() {
   /* 在家不流逝：基准已经更新，所以离开家那一刻不会把这期间的时间补上 */
   if (game.getCurrentNode() === 'home') return;
 
-  game.addElapsedSeconds(deltaRealSec * TIME_SPEED);
+  const deltaGameSec = deltaRealSec * TIME_SPEED;
+  game.addElapsedSeconds(deltaGameSec);
 
-  /* 电量上限随时间衰减：超出部分直接削掉（正常用电扣减不受影响） */
-  const cap = computeBatteryCap(game.getElapsedSeconds());
-  if (game.getBattery() > cap) game.setBattery(cap);
+  /* 电量随游戏内时间自然流逝（黑暗地点额外流逝），连续积分 */
+  drainBatteryForGameSeconds(deltaGameSec);
 
   if (game.getElapsedSeconds() >= NIGHT_DURATION_SEC) {
     game.setElapsedSeconds(NIGHT_DURATION_SEC);
@@ -65,6 +117,7 @@ export function advanceTime(seconds) {
   if (!Number.isFinite(delta) || delta <= 0 || game.isGameOver()) return;
 
   game.addElapsedSeconds(delta);
+  drainBatteryForGameSeconds(delta);                  /* 离散推进同样按速率扣电 */
 
   if (game.getElapsedSeconds() >= NIGHT_DURATION_SEC) {
     game.setElapsedSeconds(NIGHT_DURATION_SEC);
