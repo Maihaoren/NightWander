@@ -43,6 +43,7 @@
   --fs-status: 13px;
   --fs-node: 26px;
   --fs-region: 24px;                      /* 大地图上的区域名 */
+  --fs-mapnote: 11px;                     /* 大地图通道标签 + 「你在这里」小字 */
   --fs-ascii: min(1.7vh, 1.05vw, 15px);   /* ascii 图 60-80 列，字号按面板宽度自适应 */
   --lh-ascii: 1.12;
 }
@@ -217,7 +218,22 @@ body {
 
 .map .node.is-visited .node-name { fill: var(--node-visited-text); }
 
-.map .node.is-current .node-rect { stroke-width: 7; }
+/* 当前所在节点：描边取反色（浅色 = 黑底白边 / 深色 = 白底黑边）并加粗，
+   否则实心节点之间完全看不出区别 */
+.map .node.is-current .node-rect {
+  stroke: var(--paper);
+  stroke-width: 9;
+}
+
+/* 「你在这里」小字，只挂在当前节点上 */
+.map .node-here {
+  fill: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--fs-mapnote);
+  font-weight: 700;
+  text-anchor: middle;
+  pointer-events: none;
+}
 
 /* 未访问但可点：空白虚线框，不显示名称 */
 .map .node.is-unseen .node-rect {
@@ -297,6 +313,15 @@ body {
 .map .region-link {
   stroke: var(--line);
   stroke-width: 6;
+}
+
+/* 区域通道的小标签：字号明显小于区域块名（24px），用次要文字色，两种主题下都可读 */
+.map .region-link-label {
+  fill: var(--muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-mapnote);
+  text-anchor: middle;
+  pointer-events: none;
 }
 
 /* ---------- ascii 画面板 ---------- */

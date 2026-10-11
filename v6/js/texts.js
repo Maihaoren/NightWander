@@ -38,6 +38,10 @@ export const UI = {
   },
   notHere: '你现在不在这里。',
   backToWorld: '返回大地图',
+  backToArea: '返回区域地图',
+  mapHere: '你在这里',
+  /* 大地图区域通道的小标签：把这条通道靠哪些共享节点连起来说清楚 */
+  mapRegionLink: (names) => names.join(' ↔ '),
 
   terminalPlaceholder: '输入序号或命令后回车',
   echo: (input) => `> ${input}`,

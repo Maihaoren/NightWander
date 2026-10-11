@@ -11,8 +11,8 @@ import {
 import { UI, SCENES, ITEMS } from './texts.js';
 import {
   initMap, refreshMap, setMapView, getNode, getNodes, getRegion, getNodeIds, computeClickable,
-  computeEdgeCost, isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
-  isSharedNode, primaryShelterOf, getVisitedIn, REGIONS, HOME_ID,
+  isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
+  isSharedNode, primaryShelterOf, getVisitedIn, computeMoveCost, REGIONS, HOME_ID,
 } from './map.js';
 import * as terminal from './terminal.js';
 import * as modal from './modal.js';
@@ -26,6 +26,9 @@ const THEME_KEY = 'nightwander:theme';
 
 /** 终点节点：首次到达即结束。旧版的 GOAL_ID 已随 map.js 重写移除，终点改为 area2 的旅者之石 */
 const GOAL2_ID = 'goal2';
+
+/** 只有这个「区域」里过夜才回电；灯塔 / 北关口等其他安全屋过夜不回电 */
+const RECHARGE_AREA = 'home';
 
 let nightEnded = false;      /* 本轮移动/选项期间是否刚好天亮了 */
 let sceneEl = null;
@@ -50,6 +53,18 @@ function visitNode(areaId, nodeId) {
 function switchMapView(view) {
   game.setMapView(view);
   setMapView(view);
+  updateBackButton(view);
+}
+
+/**
+ * 「返回」按钮的文案跟着当前视图走：
+ *   在大地图上   → 「返回区域地图」
+ *   在区域地图上 → 「返回大地图」
+ * 点击行为不变（仍然只是 switchMapView('world')）。
+ */
+function updateBackButton(view) {
+  const button = document.getElementById('back-to-world');
+  if (button) button.textContent = view === 'world' ? UI.backToArea : UI.backToWorld;
 }
 
 /* ---------------- 静态文案 ---------------- */
@@ -468,7 +483,13 @@ async function travelTo(id) {
     return;
   }
 
-  const cost = computeEdgeCost(game.getCurrentNode(), id, area);   /* 2 */
+  /* 2 两节点间移动耗时：有直接边按那条边算；没有边走 BFS 最短路逐跳累加；
+       不连通返回 null —— 此时点不动，也不消耗任何资源 */
+  const cost = computeMoveCost(game.getCurrentNode(), id, area);
+  if (cost === null) {
+    terminal.log(UI.farAway);
+    return;
+  }
   const firstVisit = !game.isVisited(area, id);
 
   nightEnded = false;
@@ -870,7 +891,8 @@ function settleNight() {
   game.setDay(game.getDay() + 1);        /* 1 */
   game.setElapsedSeconds(0);             /* 2 */
   game.setStamina(game.getStaminaMax()); /* 3 */
-  game.setBattery(BATTERY_MAX);          /* 4 */
+  /* 4 只有「家」区域才回电：灯塔 / 北关口这些安全屋过夜不回电（电量上限随时间衰减的逻辑不变） */
+  if (game.getCurrentArea() === RECHARGE_AREA) game.setBattery(BATTERY_MAX);
   game.clearPerDayOptions();             /* 5 清空 perDay 已用项 */
   time.resetClock();                     /* 时间回到 20:00:00 */
   time.startClock(onNightEnd);           /* 夜晚结束时时钟被停过，这里重新驱动 */

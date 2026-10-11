@@ -15,7 +15,7 @@
  * 本模块不判断游戏规则，不操作终端。
  */
 
-import { SCENES } from './texts.js';
+import { SCENES, UI } from './texts.js';
 import { DEFAULT_TRAVEL_COST, DISTANCE_TO_TIME_RATIO, SECONDARY_ROAD_PENALTY } from './config.js';
 import * as game from './state.js';
 
@@ -454,6 +454,82 @@ export function computeEdgeCost(fromId, toId, regionId) {
   return cost;
 }
 
+/* ---------------- 节点间移动耗时（含 BFS 最短路） ---------------- */
+
+/** 该区域里 from → to 是否有一条直接边 */
+export function hasDirectEdge(regionId, fromId, toId) {
+  return getEdges(regionId).some(
+    (e) => (e.from === fromId && e.to === toId) || (e.from === toId && e.to === fromId),
+  );
+}
+
+/** 该区域的无向邻接表 */
+function buildAdjacency(regionId) {
+  const adj = new Map();
+  for (const id of getNodeIds(regionId)) adj.set(id, []);
+  for (const edge of getEdges(regionId)) {
+    if (!adj.has(edge.from) || !adj.has(edge.to)) continue;
+    adj.get(edge.from).push(edge.to);
+    adj.get(edge.to).push(edge.from);
+  }
+  return adj;
+}
+
+/**
+ * BFS 求 from → to 的最短路径（按跳数），返回节点 id 数组（含首尾）；不可达返回 null。
+ * 广度优先保证跳数最少；同一层按邻接表顺序走，同一份数据每次结果都一样。
+ */
+export function findShortestPath(regionId, fromId, toId) {
+  if (fromId === toId) return [fromId];
+
+  const adj = buildAdjacency(regionId);
+  if (!adj.has(fromId) || !adj.has(toId)) return null;
+
+  const prev = new Map([[fromId, null]]);
+  const queue = [fromId];
+
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const next of adj.get(cur)) {
+      if (prev.has(next)) continue;
+      prev.set(next, cur);
+
+      if (next === toId) {
+        const path = [toId];
+        let step = cur;
+        while (step !== null) { path.unshift(step); step = prev.get(step); }
+        return path;
+      }
+      queue.push(next);
+    }
+  }
+  return null;
+}
+
+/**
+ * 两个节点之间的移动耗时 —— 区域地图内移动与跨区域移动都走这个函数。
+ *   有直接边      → 按那条边算（沿用 computeEdgeCost 的全部现有规则：
+ *                    逻辑距离 × DISTANCE_TO_TIME_RATIO，支路再乘 SECONDARY_ROAD_PENALTY）
+ *   没有直接边但连通 → BFS 求最短跳数，把沿途每一跳的边耗时累加起来（这就是绕路惩罚）
+ *   不连通         → 返回 null，调用方必须据此拒绝移动
+ *
+ * 返回值 null 是一个明确的信号，不是 0：调用方不能把它当成“免费移动”。
+ */
+export function computeMoveCost(fromId, toId, regionId) {
+  const area = regionId || game.getCurrentArea();
+  if (!fromId || !toId) return null;
+  if (fromId === toId) return 0;
+
+  if (hasDirectEdge(area, fromId, toId)) return computeEdgeCost(fromId, toId, area);
+
+  const path = findShortestPath(area, fromId, toId);
+  if (!path) return null;
+
+  let total = 0;
+  for (let i = 0; i + 1 < path.length; i += 1) total += computeEdgeCost(path[i], path[i + 1], area);
+  return total;
+}
+
 /* ===============================================================
    4. 渲染（大地图 / 区域地图）
    =============================================================== */
@@ -525,11 +601,35 @@ function renderWorld() {
       const ca = REGION_BOX[id];
       const cb = REGION_BOX[nb];
       if (!ca || !cb) continue;
-      layers.roads.appendChild(svgNode('line', {
-        class: 'region-link',
-        x1: ca.x + ca.w / 2, y1: ca.y + ca.h / 2,
-        x2: cb.x + cb.w / 2, y2: cb.y + cb.h / 2,
-      }));
+
+      const x1 = ca.x + ca.w / 2;
+      const y1 = ca.y + ca.h / 2;
+      const x2 = cb.x + cb.w / 2;
+      const y2 = cb.y + cb.h / 2;
+      layers.roads.appendChild(svgNode('line', { class: 'region-link', x1, y1, x2, y2 }));
+
+      /* 小标签：写清这条通道靠哪个共享节点连起来（名字取自 NODES，拼接格式在 texts.js） */
+      const names = sharedNodes(id, nb).map((nid) => (getNode(nid) || {}).name).filter(Boolean);
+      if (names.length) {
+        const horizontal = Math.abs(x2 - x1) >= Math.abs(y2 - y1);
+        /* 标签放进两块之间的空隙中点，避免压到区域块上：
+           空隙 = [两块里较早结束的那一边, 两块里较晚开始的那一边] */
+        const gapMid = (lo1, hi1, lo2, hi2) => {
+          const gapStart = Math.min(hi1, hi2);
+          const gapEnd = Math.max(lo1, lo2);
+          return gapEnd > gapStart ? (gapStart + gapEnd) / 2 : (lo1 + hi1 + lo2 + hi2) / 4;
+        };
+        const lx = horizontal
+          ? gapMid(ca.x, ca.x + ca.w, cb.x, cb.x + cb.w)
+          : (x1 + x2) / 2 + 16;
+        const ly = horizontal
+          ? (y1 + y2) / 2 - 10
+          : gapMid(ca.y, ca.y + ca.h, cb.y, cb.y + cb.h);
+
+        const linkLabel = svgNode('text', { class: 'region-link-label', x: lx, y: ly });
+        linkLabel.textContent = UI.mapRegionLink(names);
+        layers.roads.appendChild(linkLabel);
+      }
     }
   }
 
@@ -621,6 +721,13 @@ function renderArea(regionId) {
     const label = svgNode('text', { class: 'node-name', x: p.x, y: p.y + 9 });
     label.textContent = node.name;
     group.appendChild(label);
+
+    /* 当前所在节点：名字下方再加一行「你在这里」；描边加粗由 CSS 的 .is-current 负责 */
+    if (id === currentNode) {
+      const here = svgNode('text', { class: 'node-here', x: p.x, y: p.y + NODE_H / 2 + 16 });
+      here.textContent = UI.mapHere;
+      group.appendChild(here);
+    }
 
     layers.nodes.appendChild(group);
     nodeEls.set(id, group);
