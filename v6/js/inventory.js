@@ -139,3 +139,45 @@ export function planDrop(item, equipped, pocket) {
   if ((pocket || []).includes(item)) return { where: 'pocket' };
   return { reason: '这件东西不在你身上。' };
 }
+
+/* ---------------- 穿上装备（v1.9.0b2.2 改动 3） ---------------- */
+
+/**
+ * 把【已经在身上的】一件装备穿上（口袋或手持槽里的那件）。
+ * 纯函数：只说能不能穿、旧的去哪儿；状态改动由 main.js 的 equipFromCarried() 完成。
+ *
+ * 规则：
+ *   - 没有 slot 的东西穿不上（怀表 / 罐头之类只能拿在手里）
+ *   - 目标槽空着        → mode: 'equip'（直接穿上）
+ *   - 目标槽已经有装备  → mode: 'replace'，并把旧装备的去处一并算好：
+ *       从手持槽换上来的 → 旧装备进手持槽（手持槽恒为 1 格，永远放得下）
+ *       从口袋换上来的   → 旧装备先回口袋；口袋按【换好之后】的装备算容量
+ *                          （换上的装备提供的口袋格数可能不同，容量会跟着变），
+ *                          口袋放不下再看手持槽空不空；两处都不行就拒绝，让玩家先腾空间
+ *
+ * 脱下（把装备放回储物箱）仍然只在安全屋 —— main.js 的 unequip() 那条规则本块没动。
+ *
+ * @param {object} item 要穿上的装备
+ * @param {object} equipped 当前四个槽
+ * @param {Array} pocket 当前口袋
+ * @param {'pocket'|'hand'} from 这件装备现在在哪儿
+ * @returns {{mode:'equip', slot:string}
+ *          | {mode:'replace', slot:string, current:object, carry:'pocket'|'hand'}
+ *          | {reason:string}}
+ */
+export function planEquipFromCarried(item, equipped, pocket, from = 'pocket') {
+  if (!item) return { reason: '没有这件物品。' };
+  if (!item.slot) return { reason: '这东西穿不上。' };
+
+  const current = equipped[item.slot] || null;
+  if (!current) return { mode: 'equip', slot: item.slot };
+
+  if (from === 'hand') return { mode: 'replace', slot: item.slot, current, carry: 'hand' };
+
+  const after = { ...equipped, [item.slot]: item };
+  if ((pocket || []).length <= computeEquippedPockets(after)) {
+    return { mode: 'replace', slot: item.slot, current, carry: 'pocket' };
+  }
+  if (!equipped.hand) return { mode: 'replace', slot: item.slot, current, carry: 'hand' };
+  return { reason: '换下来就装不下了，先腾出点空间。' };
+}

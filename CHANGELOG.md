@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b2.1` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b2.2` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `4` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -34,6 +34,98 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.9.0b2.2] — 2026-10-11 —— 交换改回点选项触发 + 野外可立即装备 + 安全屋弹窗加「显示大地图」+ 发电厂回电改回
+
+**回档点 / git 标签**：`v1.9.0b2.2`
+
+> 存档结构版本号**不变（仍是 v4）**、**没有新增字段**：交换的「已用」状态继续落在既有的
+> `usedOptions` 里。本版把 b2.1 的三处改动**按需求改回去**：
+> 资源交换（自动弹窗 → 点选项触发）、发电厂过夜回电（+30% 上限）、野外装备限制（放开）。
+> v1.9.0b2.1 保留的其它内容（怀表点击看时间、10 条场景化交换文案、空标题弹窗、
+> 废城 9/5/9 的交换分配）一个字都没动。
+
+### 新增
+
+- **改动 1：无交互地点补一句空文案**（`v6/js/texts.js`、`v6/js/main.js`）
+  - 新增 `UI.nothingHere = '这里什么也没有。'`；到达「什么都不能做」的地点时终端补这一句，
+    不消耗时间、不弹窗、不生成选项。
+  - 判定 `hasNothingToDo(node)`（main.js）四个条件全满足才输出：
+    ① 没有可拾取物品（按 `collectedItems` 过滤）② 没有资源交换 ③ 不是安全屋
+    ④ 没有 mustResolve、也没有任何非系统选项。全图共 12 个这样的地点。
+- **改动 4：安全屋弹窗加「显示大地图」**（`v6/js/texts.js`、`v6/js/main.js`）
+  - `UI.showWorldMap = '显示大地图'`；`resolveShelter()` 的选项从 4 个变 5 个，
+    顺序 `[过夜] [导出存档] [导入存档] [显示大地图] [稍作停留]`（新增项在倒数第二）。
+  - 点它会 `switchMapView('world')` 打开大地图，然后**就地结束整个弹窗**：
+    不消耗时间 / 体力 / 电量、不移动、不换天，**关掉大地图后不会回到安全屋弹窗**、
+    也不再逼玩家补选一项（弹窗已经在点它的时候 resolve 掉了）。
+  - `modal.js` 不需要改动：它本来就按 `items` 数组渲染任意数量。
+
+### 变更
+
+- **改动 2：资源交换改回「点选项 → 弹窗」**（`v6/js/map.js`、`v6/js/main.js`、`v6/js/texts.js`）
+  - `map.js`：交换选项去掉 `arrivalOnly: true`（删除占位常量 `EXCHANGE_OPTION_TEXT`），
+    按钮文案回到 `EXCHANGES[id].button`；`timeCost: 0` 不变。
+  - `main.js`：`availableOptions()` 去掉 `arrivalOnly` 过滤器；恢复 `KIND_HANDLERS.exchange = exchangeAtNode`
+    （即 b2 的 `exchangeAtNode`，原 `resolveExchange` 改名并去掉到达自动弹窗那一段）；
+    `arriveAt()` 里删掉第 8 步（不再自动弹），只剩第 9 步安全屋弹窗；
+    `onOptionClick` 恢复「kind === 'exchange' 不打『已用过』标记」的例外 ——
+    点按钮只是开窗，**只有弹窗里选「执行」才消耗**，选「算了」按钮保留；
+    删除 `promptedExchange` 守卫（只剩 `promptedShelter`）。
+  - `texts.js`：`EXCHANGES` 每条新增 `button`（10 条地点选项按钮文案），措辞与各自 `desc` 呼应，
+    例如 `x_rest` → `坐下来歇一会儿`、`x_power` → `接上电充一会儿`、`x_scav` → `翻一翻那堆杂物`。
+  - 到达安全屋且该地也有交换时：**安全屋弹窗先弹**，关掉之后地点按钮行里的交换按钮由玩家自己点。
+- **改动 3：所有捡到的装备都能立刻穿上**（`v6/js/inventory.js`、`v6/js/main.js`）
+  - `inventory.js` 新增纯函数 `planEquipFromCarried(item, equipped, pocket, from)`：
+    没有 `slot` 的东西穿不上；槽空 → `mode:'equip'`；槽已有装备 → `mode:'replace'`
+    并把旧装备的去处（`carry: 'pocket' | 'hand'`）一起算好（口袋按**换好之后**的装备算容量，
+    换上的装备提供的口袋格数可能不同）；两处都放不下就返回 `reason` 让玩家先腾空间。
+  - `main.js` 新增 `equipFromCarried(item, from)`（穿：替换时弹二选一确认窗）、
+    `carriedInstanceOf(itemId)`（拾取存的是副本，要按实例找）、`localEquip(itemId)`
+    （当地物品行点「装备」= 先按原拾取规则拿起来，再立刻穿上）。
+  - 物品栏里装备类物品多一个「装备」小按钮：**当地物品行**（野外捡到就能穿）、
+    **口袋行**、**手持槽行**三处；文案 `UI.equipAction / equipHint / equipReplaceTitle /
+    equipReplaceDesc / equipReplaceConfirm / equipReplaceCancel`。
+  - 「野外只能捡不能装备」不是全局开关、也不再有物品级例外 —— 原来的限制是结构性的
+    （`planWildPickup` 只返回 pocket/hand，`planTakeFromStorage` 的 equip 分支只在家用），
+    本版是**新增一条入口**，没有解锁任何开关。
+  - **脱下仍然只在安全屋**：`unequip()` 开头那句 `currentShelterKey()` 判断一行没动，
+    野外点装备槽依旧只是「查看」。
+- **改动 5：发电厂过夜回电改回（+= 上限 × 30%）**（`v6/js/main.js`、`v6/js/texts.js`）
+  - 恢复 `POWERPLANT_ID = 'powerplant'`、`POWERPLANT_RECHARGE_RATIO = 0.30` 与
+    `UI.powerplantOvernight` 文案；`settleNight()` 第 4 步恢复两条分支：
+    家 → 回满，发电厂 → `setBattery(当前 + BATTERY_MAX × 30%)`（`setBattery` 自带 clamp 到上限）。
+  - 新增 `logOvernightFlavor()`：过夜后按落点输出「发电厂专属那句 / 通用那句」；
+    `overnightAtShelter()` 把它放在 `arriveAt()` **之后**（arriveAt 开头会 `clearQueue()`，
+    排前面会被连排队一起清掉），安全屋弹窗里的「过夜」也调它。
+  - 结算顺序与电量流逝逻辑一个字没改：仍是 `天数 +1 → 跨天扣 5 → 时间归零 → 体力回满 → 回电`；
+    `timeSystem.js` 依旧没有被改动（回电规则一直在 main.js 的 `settleNight`）。
+
+### 验证
+
+- 新增临时校验脚本 `.tools/nw_b22_check.mjs`（5 个改动 + a/b1/b1.1/b2/b2.1 回归，全部通过）；
+  同时把 `.tools/nw_b21b_check.mjs` / `.tools/nw_b2_check.mjs` 里被本版回退的过时断言
+  改成新行为（交换按钮触发、发电厂 +30%、安全屋 5 项、电容器可装备）。
+- 走过的全量套件（全部通过）：`nw_b22_check` / `nw_b21b_check` / `nw_b2_check` / `nw_b11_check` /
+  `nw_b1_check` / `nw_r13_check` / `nw_r14_check` / `nw_boot_check` / `nw_ver_check`。
+- 交换选项 `kind='exchange'` + `timeCost=0`：不进随机事件池、不被移动或耗时随机触发（断言覆盖）；
+  与事件 / mustResolve / 拾取 / 安全屋弹窗依旧 await 串行、不叠加。
+
+### 已知限制 / 遗留
+
+- 「这里什么也没有。」在**随机事件触发前**就打了：事件是 `arriveAt` 之后才掷的
+  （见 `travelTo` 里 `arriveAt` 的下一条 `rollRandomEvent`），所以地点可能先报「什么都没有」、
+  紧接着弹一个事件。要彻底消掉这个顺序问题得把掷骰提到到达流程之前，本块没动。
+- 发电厂的「上限」取的是常量 `BATTERY_MAX`（当前恒为 100）。c 块把电量上限做成可变值之后，
+  `settleNight` 那一行要改成读上限接口，否则 125% 上限的例子不会成立。
+- 装备替换时旧装备优先回口袋、口袋放不下再看手持槽；两处都不行就**拒绝更换**并提示先腾空间
+  （不做「自动丢弃」）。
+- 储物箱里的装备没有加「装备」小按钮：在家取出来本身就会走 equip/口袋，取不出来时
+  点口袋里的「装备」即可，功能没有缺口。
+- 交换的 effect 数值依旧不显示给玩家（只有描述性文案）；
+  「物资 -1 → 体力 +1」那条需求仍未实现（需要一个选物品的选择器）。
 
 ---
 

@@ -77,6 +77,10 @@ export const UI = {
   /* mustResolve 弹窗 */
   mustResolveNothing: '这里似乎没什么可做的。',
 
+  /* 空地点（v1.9.0b2.2 改动 1）：既没有物品、也没有资源交换、也没有别的交互时，
+     到达后补一句，免得玩家以为卡住了。判定在 main.js 的 hasNothingToDo()。 */
+  nothingHere: '这里什么也没有。',
+
   /* 区域切换 */
   cannotGoDirectly: '你无法直接前往那里，需要走陆路。',
   notOnTheWay: '你不在通往那里的路上。',
@@ -97,6 +101,15 @@ export const UI = {
   dropItem: '丢弃',
   dropped: (name) => `你把${name}丢在了地上。`,
   dropHint: (name) => `把${name}丢在当前地点，不消耗时间，之后还能捡回来`,
+
+  /* 装备（v1.9.0b2.2 改动 3）：野外捡到装备可以立刻穿上 —— 物品栏里那个「装备」小按钮。
+     判定在 inventory.js 的 planEquipFromCarried；脱下仍然只在安全屋（规则没变）。 */
+  equipAction: '装备',
+  equipHint: (name) => `把${name}穿戴起来（野外也能穿，脱下要回安全屋）`,
+  equipReplaceTitle: '更换装备',
+  equipReplaceDesc: (newName, oldName) => `${oldName}还穿戴在身上。换上${newName}，把${oldName}换下来？`,
+  equipReplaceConfirm: '换上',
+  equipReplaceCancel: '先不换',
 
   farAway: '那里太远了，你还不认识路。',
   mustResolveFirst: '你需要先在这里做出决定。',
@@ -139,6 +152,14 @@ export const UI = {
      四个按钮复用既有的 过夜 / 导出存档 / 导入存档 / 稍作停留 文案。 */
   shelterPromptTitle: '安全屋',
   shelterPromptDesc: '这里是能歇脚的地方：屋顶还在，风进不来。',
+  /* v1.9.0b2.2 改动 4：安全屋弹窗第 4 项 —— 打开大地图看一眼。
+     点它 = 关掉这个大弹窗（不再强制选一项），只把地图切到大地图视图，不消耗任何资源。 */
+  showWorldMap: '显示大地图',
+
+  /* 发电厂专属（v1.9.0b2 有、v1.9.0b2.1 删掉、v1.9.0b2.2 按需求改回来）：
+     在这里过夜会充上一部分电。数值规则在 main.js 的 settleNight，
+     这句只负责说明「在这儿充上了」；由 logOvernightFlavor() 在过夜后输出。 */
+  powerplantOvernight: '你在机房的角落里合上眼。涡轮的低鸣整夜没停，墙上的插座一直通着电 —— 醒来时手机已经充上了一截。',
 
   /* 怀表（v1.9.0b2.1 改动 4）：改成点物品栏里的怀表看时间，不再是一个选项 */
   watchTime: (t) => `怀表指针停在 ${t}。`,
@@ -238,38 +259,47 @@ export const ITEMS = {
    数值效果写在 main.js 的 EXCHANGE_EFFECTS（与 events.js 的分工一致）。
    =============================================================== */
 export const EXCHANGES = {
-  /* ---- 时间 ↔ 资源：要花掉一段时间，换来体力 / 电量 / 物资 ---- */
+  /* ---- 时间 ↔ 资源：要花掉一段时间，换来体力 / 电量 / 物资 ----
+     button —— 地点选项按钮上的文字（v1.9.0b2.2 改动 2 从 b2.1 的「到达自动弹」改回
+       「点选项 → 弹窗」，所以又需要一条能当按钮用的短文案；措辞与下面的 desc 呼应）。
+     desc / exec / cancel / narrate —— 弹窗里的文案（b2.1 改的场景化措辞原样保留）。 */
   x_rest: {
+    button: '坐下来歇一会儿',
     desc: '你的手有点抖。就地坐下来歇一会儿，或许能好一些 —— 只是天不会等你。',
     exec: '坐下歇会儿',
     cancel: '撑住不歇',
     narrate: '你就地坐下，等手不抖了才重新站起来。',
   },
   x_nap: {
+    button: '靠着墙睡一会儿',
     desc: '眼皮沉得抬不起来。靠着墙眯一觉，人会缓过来 —— 代价是这段时间白白过去。',
     exec: '靠着睡下',
     cancel: '撑着走下去',
     narrate: '你靠着墙睡了一会儿，醒来时天没变，人却清楚多了。',
   },
   x_power: {
+    button: '接上电充一会儿',
     desc: '屏幕暗得让人心慌。旁边还通着电，接上去能充一阵 —— 前提是你在原地等它充。',
     exec: '接线充电',
     cancel: '先不充',
     narrate: '你把线接上等着，屏幕亮了一下，电量往上走了一格。',
   },
   x_ration: {
+    button: '坐下来吃点东西',
     desc: '胃里空得发慌。坐下来吃点东西总比硬扛着强 —— 只是吃这一顿要花掉时间，屏幕也会暗一点。',
     exec: '坐下吃点',
     cancel: '忍一忍',
     narrate: '你坐下来吃了几口，身上暖起来了，只是屏幕的光暗了一点。',
   },
   x_cell: {
+    button: '拆几节旧电池',
     desc: '角落里堆着一堆没人要的电气件，里面说不定还能榨出电 —— 拆开要费些工夫。',
     exec: '拆开看看',
     cancel: '不翻了',
     narrate: '你挑出几节还算完整的电池接上，电量涨了一截。',
   },
   x_scav: {
+    button: '翻一翻那堆杂物',
     desc: '这堆杂物底下压着东西。蹲下去翻一翻，也许能扒出点什么 —— 翻是要花时间的。',
     exec: '蹲下翻找',
     cancel: '不值得翻',
@@ -278,24 +308,28 @@ export const EXCHANGES = {
 
   /* ---- 资源 ↔ 资源：当场交换，不涉及时间 ---- */
   x_e2s: {
+    button: '把手电开到最亮',
     desc: '把光开到最亮，路就好走多了 —— 只是电也会跟着往下掉。',
     exec: '开到最亮',
     cancel: '省着点用',
     narrate: '你把光开到最亮，脚下的路清楚多了，屏幕上的数字却掉了一格。',
   },
   x_s2e: {
+    button: '顶着风快走一段',
     desc: '走快一点虽然更累，可迎面的风能吹着手机散热，电反而撑得久些。',
     exec: '快步走一段',
     cancel: '慢慢来',
     narrate: '你顶着风快走了一段，肩膀发酸，手机却凉了下来。',
   },
   x_e2i: {
+    button: '照着亮找找脚边',
     desc: '天太黑，看不清脚下有什么。多费点电照一圈，就能看清了。',
     exec: '照一圈',
     cancel: '摸黑走',
     narrate: '你把光压低照了一圈，脚边的碎石里躺着一样能带走的东西。',
   },
   x_s2i: {
+    button: '爬上去够那件东西',
     desc: '那堆东西码得太高，得费点力气才够得着 —— 够着了就有东西拿。',
     exec: '爬上去够',
     cancel: '不值当',

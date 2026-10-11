@@ -168,10 +168,10 @@ export const NODES = {
      东海岸  7 个 → 目标 3 时间 + 1~2 资源 + 2~3 无 → 原 2/2/3，补 1 个时间（东关）
      发电厂 / 码头关按比例归入「无交互」。
 
-   挂上去的是一个 **arrivalOnly 选项**：它【不显示在地点按钮行 / 选项行 / mustResolve 弹窗】里
-   （见 main.js 的 availableOptions），但保留一个稳定的 fullIndex ——
-   这样「已用过」状态直接落在既有的 usedOptions 里，存档格式一个字都不用改。
-   到达时由 main.js 的 resolveExchange() 自动弹窗，option.exchange 是效果表的键。
+   挂上去的是一个**可点的地点选项**（v1.9.0b2.2 改动 2 从 b2.1 的 arrivalOnly 改回来）：
+   到达时它会出现在地点按钮行 / 选项行里，由玩家主动点击 → 才弹窗（见 main.js 的 exchangeAtNode）。
+   option.exchange 是效果表（EXCHANGE_EFFECTS）的键。
+   「已用过」状态直接落在既有的 usedOptions 里，存档格式一个字都不用改。
    =============================================================== */
 const EXCHANGE_BY_NODE = {
   /* ---- 废城：时间 ↔ 资源 ×9 ---- */
@@ -211,20 +211,20 @@ const EXCHANGE_BY_NODE = {
   dockgate: 'x_power',        /* 补：码头关（东海岸第 3 个时间 ↔ 资源） */
 };
 
-/* 把交换挂成地点的 arrivalOnly 选项：放在区域表之前，保证 NODES 建好就能用。
-   text 只是个内部占位（这个选项永远不会被渲染出来），真正的文案在 EXCHANGES 的 desc/exec/cancel。 */
-const EXCHANGE_OPTION_TEXT = '就地交换';    /* 不显示，只作为选项数据的占位文本 */
-
+/* 把交换挂成地点的选项：放在区域表之前，保证 NODES 建好就能用。
+   按钮文案取自 texts.js 的 EXCHANGES[id].button（与弹窗描述呼应）；数值效果一律不写在这里。
+   timeCost = 0：时间代价在 EXCHANGE_EFFECTS 里，这样它不会触发「耗时后掷事件」。
+   once 语义：选项默认就是一次性的，但只有玩家在弹窗里选了「执行」才打「已用过」标记
+   （见 main.js 的 onOptionClick 对 kind === 'exchange' 的例外），所以「算了」之后按钮还在。 */
 for (const [nodeId, exchangeId] of Object.entries(EXCHANGE_BY_NODE)) {
   const node = NODES[nodeId];
   const ex = EXCHANGES[exchangeId];
   if (!node || !ex) continue;
   node.options.push({
-    text: EXCHANGE_OPTION_TEXT,
+    text: ex.button,
     kind: 'exchange',
     exchange: exchangeId,
-    arrivalOnly: true,    /* 不进按钮行 / 选项行 / mustResolve 弹窗，只由「到达」触发 */
-    timeCost: 0,          /* 时间代价在 EXCHANGE_EFFECTS 里（这样它不会触发「耗时后掷事件」） */
+    timeCost: 0,
     batteryCost: 0,
   });
 }
