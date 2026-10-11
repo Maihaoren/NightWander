@@ -27,5 +27,5 @@ export const SHELTER_OVERNIGHT_COST_SEC = 0; /* 安全屋「过夜」耗时（0 
 export const TERMINAL_HISTORY_MAX = 50;    /* 终端历史最多保存条数 */
 export const EVENTS_DEFAULT = false;      /* 随机事件系统默认关闭（测试时用 /event on 打开） */
 export const EVENT_CHANCE = 0.15;         /* 随机事件触发几率：每个触发点掷一次（0.15 = 15%） */
-export const GAME_VERSION = 'v1.8.11';     /* 游戏版本号 */
+export const GAME_VERSION = 'v1.8.12';     /* 游戏版本号 */
 export const DEBUG_CONSOLE = true;       /* 调试指令开关：true 时 "/" 开头的输入交给 js/debug.js */

@@ -573,8 +573,9 @@ async function travelTo(id) {
 
   /* 5.5 【事件触发点一】移动到达节点时掷一次。
         放在到达流程之后、体力负值判断之前：
-        这样「脚下一滑 -1 体力」正好能参与下面那条负值强制回家判断。 */
-  rollRandomEvent(id);
+        这样「脚下一滑 -1 体力」正好能参与下面那条负值强制回家判断。
+        事件是弹窗式的，所以这里要 await —— 玩家选完才会继续往下走。 */
+  await rollRandomEvent(id);
 
   /* 6 体力为负：正好在安全屋就地结算（不惩罚），否则强制回家 + 惩罚 */
   if (game.getStamina() < 0) {
@@ -633,12 +634,12 @@ async function resolveMustResolve(node) {
     return;
   }
 
-  const result = await modal.showModal({
+  const result = await withTimePaused(() => modal.showModal({
     title: node.name,
     desc: node.mustResolveDesc,
     items: choices.map((b) => ({ id: b.index, text: `[${b.index}] ${b.option.text}` })),
     actions: [],                                    /* 没有底部按钮：必须从 items 里选一个 */
-  });
+  }));
 
   if (!result || result.type !== 'item') return;
   await onOptionClick(result.id);                   /* 触发 handler；解除由 onOptionClick 负责 */
@@ -727,7 +728,7 @@ async function pickUpItems(node) {
     const pickable = getPickableItems(node, game.state.collectedItems);
     if (pickable.length === 0) break;                 /* 列表空了 → 自动关闭 */
 
-    const result = await modal.showModal({
+    const result = await withTimePaused(() => modal.showModal({
       title: UI.pickupTitle,
       desc: UI.pickupDesc,
       items: pickable.map((itemId) => {
@@ -739,7 +740,7 @@ async function pickUpItems(node) {
         { text: UI.pickupSkipAll, value: 'skipAll' },
         { text: UI.pickupLater, value: 'later' },       /* 关掉弹窗，改从物品栏「当地物品」区处理 */
       ],
-    });
+    }));
 
     if (!result) break;                               /* 被外部关掉 */
     if (result.type === 'action') {
@@ -791,14 +792,14 @@ async function tryTakeItem(node, itemId, item) {
   }
 
   /* 口袋与手持槽都满了：替换模态（沿用原有「丢一件或放弃」的规则） */
-  const result = await modal.showModal({
+  const result = await withTimePaused(() => modal.showModal({
     title: UI.discardTitle,
     desc: `捡到：${item.name}（${item.desc}）`,
     items: game.getPocket().map((held, index) => ({
       id: index, text: `丢掉 ${held.name}`, hint: held.desc || '',
     })),
     actions: [{ text: UI.discardCancel, value: 'cancel' }],
-  });
+  }));
 
   if (!result || result.type !== 'item') return false;   /* 放弃这一件 */
 
@@ -874,25 +875,74 @@ function dropItemToNode(item) {
   renderInventory();                                 /* 刷新物品栏 + 当地物品区 */
 }
 
+/* ---------------- 弹窗期间暂停时间 + 锁住终端输入 ---------------- */
+
+let modalDepth = 0;        /* 同时开着的弹窗层数（嵌套 / 交叠时用来决定何时解锁） */
+let modalSeq = 0;          /* 每次开窗一个唯一 token，避免先关掉的那个把后开的暂停解除 */
+
+/**
+ * 弹窗期间：时间暂停 + 终端不接收输入。
+ * 所有弹窗都从这里开（模块模态 modal.showModal 与终端模态 terminal.showModal 都包一层），
+ * 所以不会漏掉任何一个；用 try/finally 保证无论怎么结束都恢复。
+ *
+ * 用「层数 + 唯一 token」而不是布尔值：模态之间可能交叠
+ *（modal.showModal 打开新的会先把旧的关掉），布尔值会被旧的那个 finally 提前清掉。
+ */
+async function withTimePaused(run) {
+  const token = `modal:${++modalSeq}`;
+  modalDepth += 1;
+  time.addPauseReason(token);
+  if (modalDepth === 1) terminal.setLocked(true);          /* 弹窗期间终端不接收输入 */
+
+  try {
+    return await run();
+  } finally {
+    time.removePauseReason(token);
+    modalDepth -= 1;
+    /* 游戏结束时终端要保持锁定，别在这里解锁 */
+    if (modalDepth === 0 && !game.isGameOver()) terminal.setLocked(false);
+  }
+}
+
 /* ---------------- 随机事件（触发点在 main，池与效果在 events.js） ---------------- */
 
 /**
- * 在某个触发点掷一次随机事件并打印结果。
+ * 在某个触发点掷一次随机事件。
+ * 命中就弹「必须选一个」的模态（只有两个选项按钮、没有底部按钮、点遮罩也不关闭），
+ * 选完执行对应效果并打印结果；弹窗期间时间暂停、终端锁输入（见 withTimePaused）。
+ *
  * 系统关着 / 没命中 / 游戏结束都返回 null，什么都不做。
- * 事件的附加说明（比如刷出了什么）跟在氛围文案后面一行。
  */
-function rollRandomEvent(nodeId = null) {
-  const result = events.rollEvent(nodeId);
-  if (!result) return null;
+async function rollRandomEvent(nodeId = null) {
+  const event = events.rollEvent(nodeId);
+  if (!event) return null;
 
-  terminal.log(UI.eventLine(result.text));           /* 文本一律来自 texts.js */
-  if (result.extra) terminal.log(result.extra);
+  const picked = await withTimePaused(() => modal.showModal({
+    title: UI.eventTitle,
+    desc: event.desc,
+    /* 两个选项做成 items：只有它们能 resolve，所以必须选一个才能继续 */
+    items: event.options.map((option, index) => ({ id: index, text: option.label })),
+    actions: [],                                     /* 没有底部按钮：不能跳过、不能直接关闭 */
+  }));
 
-  /* 事件可能改了体力 / 电量 / 时间 / 节点物品池，重绘一次 */
+  if (!picked || picked.type !== 'item') return null;   /* 理论上不会发生（没有别的关闭途径） */
+
+  const index = Number(picked.id);
+  const option = event.options[index];
+  if (!option) return null;
+
+  const outcome = events.runEventOption(event, index, nodeId) || {};
+
+  terminal.log(UI.echo(option.label));                 /* 回看：> 选项文本 */
+  if (outcome.reply) terminal.log(outcome.reply);      /* 该选项的氛围 / 结果文案 */
+  if (outcome.spawned) terminal.log(UI.eventSpawned(outcome.spawned));
+
+  /* 效果可能改了体力 / 电量 / 时间 / 节点物品池，重绘一次 */
+  onBatteryCollapse();                                 /* 电量被用干、人又在黑暗地点 → 走断电回家 */
   renderStatusBar();
   renderInventory();
   refreshMap({ current: game.getCurrentNode() });
-  return result;
+  return { id: event.id, index };
 }
 
 /* ---------------- 选项执行 ---------------- */
@@ -938,7 +988,7 @@ async function onOptionClick(index) {
         只在这个选项真的消耗了游戏内时间、且没被天亮/断电打断时掷。
         移动本身不在这里掷 —— 移动的事件由 travelTo 的「到达」那一掷负责，避免一个动作掷两次。 */
   if (!nightEnded && !batteryCollapsed && (option.timeCost || 0) > 0) {
-    rollRandomEvent(node.id);
+    await rollRandomEvent(node.id);
   }
 }
 
@@ -1159,11 +1209,11 @@ async function exportSave() {
   const text = save.serialize(game.toSnapshot());
   terminal.log(text);
 
-  const picked = await terminal.showModal({
+  const picked = await withTimePaused(() => terminal.showModal({
     title: UI.saveTitle,
     input: { value: text, readOnly: true },
     actions: [{ label: UI.copy, value: 'copy' }, { label: UI.close, value: null }],
-  });
+  }));
 
   if (picked === 'copy') {
     const ok = await terminal.copyText(text);
@@ -1172,11 +1222,11 @@ async function exportSave() {
 }
 
 async function importSave() {
-  const text = await terminal.showModal({
+  const text = await withTimePaused(() => terminal.showModal({
     title: UI.importSave,
     input: { placeholder: '把存档字符串粘贴到这里' },
     actions: [{ label: UI.ok }, { label: UI.cancel, value: null }],
-  });
+  }));
   if (!text) return;
 
   const snapshot = save.deserialize(text);
@@ -1195,7 +1245,11 @@ async function importSave() {
   const node = getNode(game.getCurrentNode()) || getNode(HOME_ID);
   game.setOptions(buildOptions(node));
   switchMapView(game.getMapView());                   /* 3 视图按存档恢复（大地图 / 区域地图） */
-  time.startClock(onNightEnd);                        /* 4 重启定时器（重建时间基准） */
+  time.startClock(onNightEnd);                        /* 4 重启定时器（startClock 里会重建时间基准） */
+  /* 4.5 页面可见时再显式重建一次基准，别把导入前的真实时间算进去。
+         若导入时页面是隐藏的，tick 本来就被暂停条件挡着，等恢复可见时
+         visibilitychange 会再重建一次基准（见 timeSystem.watchVisibility）。 */
+  if (!document.hidden) time.resetClock();
 
   refreshMap({ current: game.getCurrentNode() });     /* 5 重绘 UI */
   renderStatusBar();
@@ -1310,6 +1364,14 @@ function boot() {
   /* 注入两个只有 main 才知道的判定：timeSystem 不认识地图，也不该认识游戏规则 */
   time.setDarkNodeResolver(isDarkNode);   /* 「这个节点是黑暗地点吗」→ 决定电量流逝速率 */
   time.setOnBatteryEmpty(onBatteryCollapse); /* 「流逝中电量掉到 0 了」→ 黑暗地点走断电回家 */
+
+  /* 时间暂停 / 恢复的提示（timeSystem 不认识终端）：只在 DEBUG_CONSOLE 开启时输出 */
+  time.setOnPauseChange((paused) => {
+    if (!DEBUG_CONSOLE) return;
+    terminal.log(paused ? UI.timePaused : UI.timeResumed);
+  });
+  /* 窗口隐藏 → 暂停（隐藏期间的时间不补足）；显示 → 重建基准并恢复 */
+  time.watchVisibility();
 
   const worldButton = document.getElementById('back-to-world');
   if (worldButton) worldButton.addEventListener('click', onBackButtonClick);

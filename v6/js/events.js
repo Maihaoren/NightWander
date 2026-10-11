@@ -1,15 +1,24 @@
 /**
- * events.js —— 随机事件池
+ * events.js —— 随机事件池（v1.8.12：弹窗 + 必须决断）
  *
- * 只做三件事：定义事件池、掷骰、抽事件并应用效果。
- * 不碰 DOM（终端输出由 main.js 负责），文案全部来自 texts.js 的 EVENTS。
+ * 只做四件事：定义事件池、掷骰、把「玩家选的选项」执行掉。
+ * 不碰 DOM —— 弹窗由 main.js 调 modal.js 弹，文案全部来自 texts.js 的 EVENTS。
+ *
+ * 事件结构（EVENT_POOL 的每一项）：
+ *   { id, desc, options: [{ label, effect }] }
+ *   desc    —— 弹窗里的描述（来自 texts.js）
+ *   label   —— 选项按钮文字（来自 texts.js）
+ *   effect  —— 函数，执行该选项的状态改动；接收 ctx = { node }，
+ *              可返回 { spawned?: 物品名 } 之类的附加信息给终端用
  *
  * 触发时机（由 main.js 决定，本模块不自己挂时机）：
  *   1) 移动到达节点时掷一次
  *   2) 每次「消耗时间」的选项执行后掷一次（不含移动本身，免得一个动作掷两次）
  * 每个触发点只掷一次；命中（Math.random() < EVENT_CHANCE）才从池里抽一个事件。
- *
  * 事件可重复触发，不做「刚出过就排除」的过滤。
+ *
+ * 与 v1.8.11 的区别：rollEvent() 只负责「出不出、出哪个」，效果不再自动执行；
+ * 玩家在弹窗里选完，main.js 再调 runEventOption() 执行对应 effect。
  */
 
 import { EVENT_CHANCE } from './config.js';
@@ -19,7 +28,7 @@ import * as game from './state.js';
 import * as time from './timeSystem.js';
 
 /**
- * 「路边补给」用来刷物品的候选表。
+ * 「刷物品」类选项用的候选表。
  * 只挑无槽位／通用的小件，且避开开局储物箱里已经有的东西，免得满地都是大衣牛仔裤。
  */
 const SUPPLY_ITEMS = ['compass', 'pocketwatch', 'darkshard', 'oldmap'];
@@ -33,69 +42,83 @@ function spawnItemOnNode(node, itemId) {
   return true;
 }
 
-/** 从候选里挑一件该节点还没有的；都齐了就用第一件（重复刷同一件没有意义） */
+/** 从候选里挑一件该节点还没有的；都齐了就随机重复刷一件 */
 function pickSupplyItem(node) {
   const free = SUPPLY_ITEMS.filter((id) => ITEMS[id] && !node.items.includes(id));
   const pool = free.length ? free : SUPPLY_ITEMS;
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+/** 在当前节点刷 1 件物品，返回物品名（没刷成返回空串） */
+function grantItemToNode(node) {
+  const itemId = pickSupplyItem(node);
+  return spawnItemOnNode(node, itemId) ? ITEMS[itemId].name : '';
+}
+
 /**
- * 事件池。每个事件：
- *   id      —— 与 texts.js 的 EVENTS 键一致
- *   text    —— 由 texts.js 提供，不在池里重复写
- *   apply(node) —— 实际效果，返回一句「补充说明」或 ''（可选）
- *
- * 效果都只做简单状态改动：体力 / 电量 / 时间 / 节点物品池。
+ * 每个事件两个选项的效果，下标与 texts.js 里 EVENTS[id].options 一一对应。
+ * 只做简单状态改动：体力 / 电量 / 时间 / 节点物品池。
  */
-export const EVENT_POOL = [
-  {
-    id: 'coins',
-    /* 1) 拾得零钱：没有状态改动，纯氛围 */
-    apply: () => '',
-  },
-  {
-    id: 'slip',
-    /* 2) 脚下一滑：体力 -1（允许扣成负数，交由 main.js 的既有规则处理） */
-    apply: () => {
-      game.spendStamina(1);
-      return '';
-    },
-  },
-  {
-    id: 'supply',
-    /* 3) 路边补给：当前节点刷出 1 件物品（走现有节点物品池） */
-    apply: (node) => {
-      if (!node) return '';
-      const itemId = pickSupplyItem(node);
-      if (!spawnItemOnNode(node, itemId)) return '';
-      return `地上多了一件${ITEMS[itemId].name}。`;
-    },
-  },
-  {
-    id: 'flicker',
-    /* 4) 路灯闪烁：电量 -5%（走 state.setBattery，下限 0 由它夹住） */
-    apply: () => {
-      game.spendBattery(5);
-      return '';
-    },
-  },
-  {
-    id: 'lost',
-    /* 5) 迷路片刻：时间 +300 秒。
-          走 time.advanceTime()：既推进钟点、也按速率扣电、还会检查是否天亮，与其它时间流逝一致 */
-    apply: () => {
-      time.advanceTime(300);
-      return '';
-    },
-  },
-];
+const EFFECTS = {
+  /* 1) 拾得零钱：A 刷 1 件物品；B 无效果 */
+  coins: [
+    (ctx) => ({ spawned: grantItemToNode(ctx.node) }),
+    () => null,
+  ],
+
+  /* 2) 脚下一滑：A 体力 -1；B 时间 +180 秒 */
+  slip: [
+    () => { game.spendStamina(1); },
+    () => { time.advanceTime(180); },
+  ],
+
+  /* 3) 路边售货机：A 电量 -5% 且刷 1 件物品；B 无效果 */
+  vending: [
+    (ctx) => { game.spendBattery(5); return { spawned: grantItemToNode(ctx.node) }; },
+    () => null,
+  ],
+
+  /* 4) 路灯闪烁：A 电量 -3%；B 电量 -8% 且时间 +180 秒 */
+  flicker: [
+    () => { game.spendBattery(3); },
+    () => { game.spendBattery(8); time.advanceTime(180); },
+  ],
+
+  /* 5) 迷路片刻：A 时间 +180 秒；B 时间 +300 秒且体力 -1 */
+  lost: [
+    () => { time.advanceTime(180); },
+    () => { time.advanceTime(300); game.spendStamina(1); },
+  ],
+};
+
+/**
+ * 事件池：把 texts.js 的文案与上面的效果拼成 { id, desc, options:[{label,effect}] }。
+ * 加新事件只要在 texts.js 加一条 EVENTS、在这里加一组 EFFECTS。
+ */
+export const EVENT_POOL = Object.keys(EVENTS).map((id) => {
+  const copy = EVENTS[id];
+  const effects = EFFECTS[id] || [];
+  return {
+    id,
+    desc: copy.desc,
+    options: (copy.options || []).map((label, index) => ({
+      label,
+      effect: effects[index] || (() => null),
+      reply: (copy.replies || [])[index] || '',
+    })),
+  };
+});
 
 const POOL_BY_ID = new Map(EVENT_POOL.map((e) => [e.id, e]));
 
 /** 池里所有事件 id（debug / 测试用） */
 export function listEventIds() {
   return EVENT_POOL.map((e) => e.id);
+}
+
+/** 按 id 取事件对象（不执行任何效果）；不认识的 id 返回 null */
+export function getEvent(id) {
+  return POOL_BY_ID.get(id) || null;
 }
 
 /**
@@ -109,41 +132,45 @@ export function pickEvent(rng = Math.random) {
 }
 
 /**
- * 强制触发指定事件（不走掷骰）。id 不认识时返回 null。
- * @returns {{ id:string, text:string, extra:string } | null}
- */
-export function triggerEvent(id, nodeId = null) {
-  const event = POOL_BY_ID.get(id);
-  if (!event) return null;
-
-  const node = getNode(nodeId || game.getCurrentNode());
-  const copy = EVENTS[event.id] || { text: '' };
-  const extra = event.apply(node) || '';
-
-  return { id: event.id, text: copy.text, extra };
-}
-
-/**
- * 触发点：掷一次骰子，命中才抽事件并应用。
+ * 触发点：掷一次骰子，命中就返回要弹的事件（**不执行效果**）。
  *
  * 受开关控制：
- *   - state.eventsEnabled（/event on|off|reset 控制，存 localStorage）
+ *   - game.getEventsEnabled()（/event on|off|reset 控制，存 localStorage）
  *   - 游戏已结束时不再触发
  * 关着的时候直接返回 null，不消耗随机数。
  *
- * @returns {{ id:string, text:string, extra:string } | null} 命中并执行了才返回结果
+ * @returns {object|null} 命中则返回 { id, desc, options }，否则 null
  */
 export function rollEvent(nodeId = null, rng = Math.random) {
   if (!game.getEventsEnabled()) return null;
   if (game.isGameOver()) return null;
   if (!(rng() < EVENT_CHANCE)) return null;          /* 没命中：这一次不抽事件 */
+  void nodeId;                                       /* 落点由 main.js 在执行效果时传回来 */
+  return pickEvent(rng);
+}
 
-  const event = pickEvent(rng);
-  if (!event) return null;
+/**
+ * 执行玩家选中的那个选项。
+ * @param {object} event rollEvent() 返回的事件对象
+ * @param {number} index 选项下标（0 / 1）
+ * @param {string} [nodeId] 当前节点，默认用 state 里的
+ * @returns {{ id:string, index:number, label:string, reply:string, spawned:string } | null}
+ *   reply   —— 终端要补的一句（可为空串）
+ *   spawned —— 刷出来的物品名（没刷则空串）
+ */
+export function runEventOption(event, index, nodeId = null) {
+  if (!event || !Array.isArray(event.options)) return null;
+  const option = event.options[Number(index)];
+  if (!option) return null;
 
   const node = getNode(nodeId || game.getCurrentNode());
-  const copy = EVENTS[event.id] || { text: '' };
-  const extra = event.apply(node) || '';
+  const outcome = option.effect({ node }) || {};
 
-  return { id: event.id, text: copy.text, extra };
+  return {
+    id: event.id,
+    index: Number(index),
+    label: option.label,
+    reply: option.reply || '',
+    spawned: outcome.spawned || '',
+  };
 }

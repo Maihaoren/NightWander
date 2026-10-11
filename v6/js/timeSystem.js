@@ -2,9 +2,15 @@
  * timeSystem.js —— 时间与天数推进、电量流逝、格式化、夜晚结束触发
  * 只负责时间的推进与格式化，不判断游戏规则。
  *
- * 推进方案：时间戳差值。每次 tick 用 Date.now() 的真实差值累加，
- * 所以标签页被节流、切回前台时会一次性补足。
- * 在家节点时时间不流逝。
+ * 推进方案：时间戳差值。每次 tick 用 Date.now() 的真实差值累加。
+ *
+ * 【暂停条件】（v1.8.12 起统一成一处判断，互不覆盖）：
+ *   1) 有任意「暂停来源」生效 —— 窗口隐藏（visibilitychange）／模态弹窗打开期间
+ *      这些来源用 token 记在一个 Set 里，全部解除才恢复；用 Set 而不是布尔值，
+ *      是因为多个来源可能重叠，布尔值会被后一个来源的「恢复」把前一个还没结束的暂停覆盖掉。
+ *   2) 在家节点 —— 这是按当前节点算出来的「每帧条件」，不是事件，所以留在 tick 里一起判。
+ *   暂停期间【不补足】时间：tick 每帧都把 lastTickTime 推到当前时刻，
+ *   恢复时再显式重建一次基准，所以隐藏 / 弹窗期间流逝的真实时间一律不算。
  *
  * 电量流逝（v1.8.8 起）：只削当前电量，上限恒为 BATTERY_MAX；
  * 按游戏内秒数连续积分，黑暗节点额外加速，跨天再一次性扣一笔。
@@ -34,6 +40,65 @@ export function setOnBatteryEmpty(callback) {
 
 export function setDarkNodeResolver(resolver) {
   darkNodeResolver = typeof resolver === 'function' ? resolver : () => false;
+}
+
+/* ---------------- 暂停条件（token 集合） ----------------
+
+   窗口隐藏用固定 token 'hidden'；模态弹窗由 main.js 每次开窗分配一个唯一 token
+  （'modal:1'、'modal:2'…），这样两个弹窗叠在一起时先关掉的那个不会把另一个的暂停解除掉。
+   暂停/恢复的提示由 main.js 注入的回调输出（timeSystem 不认识终端）。
+*/
+const HIDDEN_REASON = 'hidden';
+const pauseTokens = new Set();
+let onPauseChange = null;
+
+export function setOnPauseChange(callback) {
+  onPauseChange = typeof callback === 'function' ? callback : null;
+}
+
+/** 追加一个暂停来源；全部解除时才算恢复 */
+export function addPauseReason(token) {
+  const was = pauseTokens.size > 0;
+  pauseTokens.add(String(token));
+  notifyPause(was);
+}
+
+/** 解除一个暂停来源；还有别的来源生效就继续暂停 */
+export function removePauseReason(token) {
+  const was = pauseTokens.size > 0;
+  pauseTokens.delete(String(token));
+  notifyPause(was);
+}
+
+/** 当前是否因为「暂停来源」而暂停（不含「在家」那条每帧条件） */
+export function isTimePaused() {
+  return pauseTokens.size > 0;
+}
+
+/** 只有在「暂停↔恢复」真正翻转时才通知一次，避免每帧刷屏 */
+function notifyPause(wasPaused) {
+  const nowPaused = pauseTokens.size > 0;
+  if (wasPaused === nowPaused) return;
+  if (onPauseChange) onPauseChange(nowPaused);
+}
+
+/**
+ * 监听窗口隐藏 / 显示（由 main.js 在 boot() 里装一次）。
+ *   隐藏 → 记上 'hidden'：tick 的暂停条件成立，隐藏期间的时间不补足
+ *   显示 → 解除 'hidden' 并重建 lastTickTime，恢复计时
+ * 启动时如果页面已经是隐藏的（后台标签打开），直接按隐藏处理。
+ */
+export function watchVisibility() {
+  if (typeof document === 'undefined' || !document.addEventListener) return;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      addPauseReason(HIDDEN_REASON);
+    } else {
+      removePauseReason(HIDDEN_REASON);
+      lastTickTime = Date.now();          /* 重建基准：隐藏期间一秒都不补 */
+    }
+  });
+  if (document.hidden) addPauseReason(HIDDEN_REASON);
 }
 
 export function startClock(callback) {
@@ -105,10 +170,14 @@ export function drainBatteryOnDayChange() {
 function tick() {
   const now = Date.now();
   const deltaRealSec = (now - lastTickTime) / 1000;
+  /* 基准每帧都推到当前时刻：所以无论因为什么原因跳过累加，
+     跳过的那段时间都不会在恢复后被一次补上 */
   lastTickTime = now;
 
-  /* 在家不流逝：基准已经更新，所以离开家那一刻不会把这期间的时间补上 */
-  if (game.getCurrentNode() === 'home') return;
+  /* 【暂停条件】统一在这里判断，两个条件互不覆盖：
+       1) 有暂停来源（窗口隐藏 / 弹窗打开）
+       2) 在家节点（状态派生出来的每帧条件） */
+  if (isTimePaused() || game.getCurrentNode() === 'home') return;
 
   const deltaGameSec = deltaRealSec * TIME_SPEED;
   game.addElapsedSeconds(deltaGameSec);

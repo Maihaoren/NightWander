@@ -1119,7 +1119,7 @@ function renderArea(regionId) {
       if (visited.has(id)) classes.push('is-visited', 'is-blocked');
       else classes.push('is-unseen', 'is-blocked');
     } else classes.push('is-open', 'is-unseen');
-    /* 黑暗地点标识：独立于上面那几种状态再叠一层（底色 + 紫色描边 + 名字下方的小标签），
+    /* 黑暗地点标识：独立于上面那几种状态再叠一层（圆形 + 中性深灰圆环 + 名字下方的小标签），
        所以「已访问 / 未访问 / 当前 / 走不到 / 没电进不去」五种状态下都认得出来 */
     if (node.isDark) classes.push('is-dark');
 

@@ -31,10 +31,11 @@
   --unvisited-node-fill: #ffffff;
 
   /* 黑暗地点 / 黑暗区域：形状改用【圆】（见 .node-circle / .region-circle 规则），
-     填充与描边沿用通用节点变量（浅色黑框白底 / 深色白框深底），不再另造一套底色。
-     只保留两项「黑暗标识」：圆环的强调色，以及名字下方的 [黑暗] 小标签。 */
-  --dark-node-stroke: #7b3ba3;      /* 圆环强调色（紫） */
-  --dark-tag: #6d2f92;              /* [黑暗] 小标签 */
+     填充与描边沿用通用节点变量（浅色黑框白底 / 深色白框深底），不另造一套色。
+     只保留两项「黑暗标识」：圆环用的中性深灰，以及名字下方的 [黑暗] 小标签。
+     全是灰度色，不带任何彩度。 */
+  --dark-node-stroke: #333333;      /* 圆环：中性深灰（压在白底上） */
+  --dark-tag: #4d4d4d;              /* [黑暗] 小标签：中性深灰 */
 
   --gap: 10px;
   --pad: 8px;
@@ -73,10 +74,10 @@ html[data-theme="dark"] {
   --unvisited-node-border: #ffffff;
   --unvisited-node-fill: #1a1a1a;
 
-  /* 黑暗地点 / 黑暗区域：底色同通用节点（深色主题 = 白框深底），
-     圆环强调色与标签在深色主题下提亮，保证可读 */
-  --dark-node-stroke: #c07ae0;
-  --dark-tag: #c07ae0;
+  /* 黑暗地点 / 黑暗区域：底色同通用节点（深色主题 = 白框深底）。
+     深色主题下普通节点是白描边，这里用暗一档的中性灰，既压得住深底又能和普通节点区分 */
+  --dark-node-stroke: #9a9a9a;
+  --dark-tag: #b5b5b5;
   /* 故意不覆盖 --term-*：终端两种主题下保持一致 */
 }
 
@@ -287,10 +288,11 @@ body {
 
 /* ---------- 黑暗地点 / 黑暗区域标识（isDark）：圆形 ----------
    形状方案（v1.8.11 起）：黑暗地点/黑暗区域画成【圆】，与普通节点的方形/菱形区分；
-   配色沿用通用节点变量（浅色黑框白底 / 深色白框深底），不另造一套底色；
-   黑暗标识只保留两项 —— 圆环的强调色，以及名字下方的 [黑暗] 小标签。
-   这组规则放在所有节点状态规则【之后】：同权重时后写的赢，所以圆形能盖掉方形/菱形，
-   同时下面单独给 .is-current 与 hover 补规则，保证原有状态提示不被吃掉。 */
+   配色沿用通用节点变量（浅色黑框白底 / 深色白框深底），不另造一套色。
+   黑暗标识全是【中性灰】三件套：圆形 + 略粗的深灰圆环 + 名字下方的 [黑暗] 小标签，
+   不带任何彩色。这组规则放在所有节点状态规则【之后】：同权重时后写的赢，
+   所以圆形能盖掉方形/菱形；下面再给 .is-current / hover / is-visited 补规则，
+   保证原有状态提示不被吃掉（已访问的圆是反色底，圆环与标签要跟着换成反色才看得清）。 */
 
 /* 圆形默认不画（只有 isDark 才画出来） */
 .map .node-circle,
@@ -302,14 +304,19 @@ body {
 
 .map .node.is-dark .node-circle {
   display: block;
-  fill: var(--node-fill);                  /* 通用配色：浅色白底 */
-  stroke: var(--dark-node-stroke);         /* 黑暗标识：圆环强调色 */
-  stroke-width: 3;
+  fill: var(--node-fill);                  /* 通用配色：浅色白底 / 深色深底 */
+  stroke: var(--dark-node-stroke);         /* 黑暗标识：中性深灰圆环 */
+  stroke-width: 4;                         /* 比普通节点的 3px 略粗，不靠颜色也能区分 */
   transition: fill 80ms linear, stroke-width 80ms linear;
 }
 
 /* 已访问 / 当前所在 / hover 都沿用通用节点那一套，只是作用在圆上 */
 .map .node.is-dark.is-visited .node-circle { fill: var(--node-visited-fill); }
+
+/* 已访问的圆是【反色底】（浅色主题=黑底 / 深色主题=白底），
+   中性灰圆环在其上对比不足，所以圆环与标签一起换成反色文字色 */
+.map .node.is-dark.is-visited .node-circle { stroke: var(--node-visited-text); }
+.map .node.is-dark.is-visited .dark-tag { fill: var(--node-visited-text); }
 
 .map .node.is-dark.is-current .node-circle {
   stroke-width: calc(9px * var(--node-scale, 1));   /* 与普通节点的「当前」一样加粗 */
@@ -317,7 +324,7 @@ body {
 
 .map .node.is-dark.is-open:hover .node-circle {
   fill: var(--hover-bg);                            /* 与普通节点的 hover 反馈一致 */
-  stroke-width: 3;
+  stroke-width: 4;
 }
 
 /* 大地图：黑暗区域块同样改画圆（半径由 JS 取区域框的半个高，保证落在框内） */
@@ -328,7 +335,7 @@ body {
   display: block;
   fill: var(--node-fill);
   stroke: var(--dark-node-stroke);
-  stroke-width: 3;
+  stroke-width: 4;
   transition: fill 80ms linear, stroke-width 80ms linear;
 }
 
@@ -351,7 +358,7 @@ body {
   letter-spacing: 1px;
 }
 
-/* 区域圆里的名字用白色时（已访问的深底圆）标签也要跟着亮，否则紫字压在黑底上看不清 */
+/* 已访问的圆是反色底（浅色主题=黑底），标签跟着换成反色文字色才读得出来 */
 .map .region.is-dark.is-visited .dark-tag { fill: var(--node-visited-text); }
 
 /* ---------- 大地图（区域块 / 区域通道） ---------- */
