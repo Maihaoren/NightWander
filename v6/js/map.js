@@ -1,17 +1,22 @@
 /**
  * map.js —— 多区域地图（数据 + SVG 绘制 + 点击回调）
  *
- * 数据模型（本次重构）：
+ * 数据模型：
  *   NODES   —— 全局节点字典，以 id 为键。节点 id 全局唯一，不重复。
  *   REGIONS —— 区域字典，用 nodes: string[] 引用 NODES 里的 id。
  *
- * 区域之间靠【共享节点】连通，不再有「跨区域边」：
- *   home       同时属于 home 区域与 area1
- *   lighthouse 同时属于 area1 与 area2
- * 因此从一个区域切到另一个区域 = 换一个区域视图，玩家仍站在同一个节点上，
- * 不消耗体力、不消耗时间。
+ * 区域之间靠【共享节点】连通，不再有「跨区域边」，所以切区域不消耗体力与时间。
  *
- * 区域内部用细线（.road），区域之间用粗线（.region-link）。
+ * 【v1.9.0b1 现状】7 个区域全部注册，但只落地了 2 个：
+ *   giantwall 巨墙   —— wallfoot + wallgate（墙门是共享节点）
+ *   wasteland 废城   —— home + 19 个普通地点 + 4 个接口（wallgate / northgate /
+ *                       eastgate / southgate）
+ *   其余 5 个（wilderness 荒野 / industry 工业区 / coast 东海岸 / dock 码头 /
+ *   island 孤岛）是**占位**：placeholder: true，nodes 里只放那个共享接口节点、
+ *   edges 为空、primaryShelter 为 null，等 b2 / b3 / b4 落地。
+ *
+ * 区域内部用细线（.road），区域之间用粗线（.region-link），
+ * 接口节点朝外还有一根「延伸白线」（.road .region-spoke，见改动 6）。
  * 本模块不判断游戏规则，不操作终端。
  */
 
@@ -24,24 +29,12 @@ export const VIEW = { w: 1000, h: 600 };
 export const NODE_W = 130;
 export const NODE_H = 56;
 export const HOME_ID = 'home';
-export const START_AREA = 'home';           /* 开局所在区域 */
-export const LIGHTHOUSE_ID = 'lighthouse';  /* area1 与 area2 的共享节点 */
+export const START_AREA = 'wasteland';          /* 开局所在区域（家就在废城里） */
 
-/* 选项前置条件（requires(state) === false 时按钮灰着并显示 requiresHint） */
-const HOLDS_LIGHT = (s) => {
-  const slots = [s.equipped.hand, s.equipped.torso, s.equipped.legs, s.equipped.back];
-  const lit = (item) => Boolean(item) && (item.id === 'flashlight' || item.id === 'torch');
-  return slots.some(lit) || s.pocket.some(lit);
-};
-const HOLDS_FLASHLIGHT = (s) => {
-  const slots = [s.equipped.hand, s.equipped.torso, s.equipped.legs, s.equipped.back];
-  const isTorch = (item) => Boolean(item) && item.id === 'flashlight';
-  return slots.some(isTorch) || s.pocket.some(isTorch);
-};
-const REQUIRES = {
-  n3: { 进入洞穴: { check: HOLDS_LIGHT, hint: '需要光源' } },
-  n5: { 使用手电筒探查: { check: HOLDS_FLASHLIGHT, hint: '需要手电筒' } },
-};
+/* 选项前置条件（requires(state) === false 时按钮灰着并显示 requiresHint）。
+   v1.9.0b1：旧规则挂在 n3 / n5 上，那两个节点随旧地图一起删了，所以本表暂时为空 ——
+   机制原样保留，以后挂选项时往这里补即可。 */
+const REQUIRES = {};
 
 /**
  * 从 SCENES 展开一个节点。
@@ -70,174 +63,276 @@ function defNode(id, x, y, items, mustResolve, isDark) {
     mustResolveDesc: scene.mustResolveDesc || '',
     /* 黑暗地点：身处其中时电量额外流逝，且没电时不能从外面走进去。
        标记写在节点上而不是「按区域 + 是否入口」推：同一区域将来可以有多个黑暗地点，
-       入口通道（southpass）也就不需要任何特例。 */
+       接口节点（墙门 / 北关 / 东关 / 南关）也就不需要任何特例。 */
     isDark: Boolean(isDark),
   };
 }
 
 /* ===============================================================
-   1. 节点字典（全局唯一 id）
+   1. 节点字典（全局唯一 id）—— v1.9.0b1 共 25 个
+   ---------------------------------------------------------------
+   坐标是「逻辑坐标」，直接参与 computeEdgeCost 的距离计算，
+   绘制时再叠加 getNodeNoise() 的固定伪随机偏移（沿用既有机制，没有手写噪声）。
+   家与巨墙在东侧 / 西侧的对齐、四个接口贴边，都是为了让延伸白线指向正确的边框。
    =============================================================== */
 
 export const NODES = {
-  home: defNode('home', 80, 300, []),
-  n1: defNode('n1', 250, 100, ['flashlight'], true),   /* 关键节点：捡手电筒 */
-  n2: defNode('n2', 250, 300, ['torch']),
-  n3: defNode('n3', 250, 500, [], true),               /* 关键节点：幽暗洞穴 */
-  n4: defNode('n4', 450, 100, []),
-  n5: defNode('n5', 450, 300, [], true),               /* 关键节点：废弃哨塔 */
-  n6: defNode('n6', 450, 500, []),
-  n7: defNode('n7', 650, 300, [], true),               /* 关键节点：岔路口 */
-  lighthouse: defNode('lighthouse', 800, 300, ['pocketwatch'], true),  /* 关键节点 + 共享节点 */
+  /* ---- 巨墙 giantwall（2 个） ---- */
+  wallfoot: defNode('wallfoot', 350, 300, []),            /* 墙根：无任何交互 */
+  wallgate: defNode('wallgate', 95, 170, []),             /* 共享：巨墙 ↔ 废城，也是巨墙的主安全屋 */
 
-  /* area2：以 lighthouse 为起点向左延伸（lighthouse 是共享节点，坐标由 area1 那侧定死） */
-  m1: defNode('m1', 620, 120, []),
-  m2: defNode('m2', 460, 300, []),
-  m3: defNode('m3', 300, 120, []),
-  goal2: defNode('goal2', 140, 300, []),
+  /* ---- 废城 wasteland（24 个 = 家 1 + 普通 19 + 接口 4） ---- */
+  home: defNode('home', 95, 300, []),                     /* 唯一回电点，储物箱里有罐头 / 大衣 / 牛仔裤 + 日记 / 作者留言 */
 
-  /* 北面两个新区域 */
-  northpass: defNode('northpass', 660, 60, []),   /* area1 的北出口 / newarea2 的东出口（共享） */
-  northgate: defNode('northgate', 580, 300, []),  /* newarea1 的东端 / newarea2 的西端（共享） */
-  na1_main: defNode('na1_main', 330, 300, ['compass']),
-  na2_main: defNode('na2_main', 350, 300, []),
+  /* 四个接口（共享节点）：各自贴着自己那一侧的边框 */
+  northgate: defNode('northgate', 850, 50, []),           /* 北 → 荒野（占位，b3 落地） */
+  eastgate: defNode('eastgate', 930, 300, []),            /* 东 → 东海岸（占位，b2 落地） */
+  southgate: defNode('southgate', 700, 560, []),          /* 南 → 工业区（占位，b2 落地） */
 
-  /* 南面黑暗地带：southpass 是 area1 的南出口 / darkarea 的北入口（共享），
-     dark_core 是区域内部的黑暗地点（isDark = true） */
-  southpass: defNode('southpass', 660, 540, []),        /* 仿 northpass，只是方向朝南 */
-  dark_core: defNode('dark_core', 660, 300, ['darkshard'], false, true),
+  /* 19 个普通地点 */
+  plaza: defNode('plaza', 270, 300, []),
+  apartment: defNode('apartment', 200, 215, []),
+  gasstation: defNode('gasstation', 185, 85, []),
+  hospital: defNode('hospital', 300, 110, []),
+  brokenbridge: defNode('brokenbridge', 395, 395, ['pocketwatch']),  /* 怀表放在这里（本块只落地放置点） */
+  sewer: defNode('sewer', 195, 420, []),
+  station: defNode('station', 700, 300, []),
+  school: defNode('school', 470, 145, []),
+  library: defNode('library', 590, 110, []),
+  church: defNode('church', 700, 90, []),
+  factoryold: defNode('factoryold', 270, 505, []),
+  warehouse: defNode('warehouse', 420, 545, []),
+  subway: defNode('subway', 620, 230, []),
+  park: defNode('park', 370, 205, []),
+  parking: defNode('parking', 690, 425, []),
+  watertower: defNode('watertower', 790, 215, []),
+  substation: defNode('substation', 540, 520, []),
+  dump: defNode('dump', 520, 400, []),
+  mall: defNode('mall', 470, 300, []),
 };
 
 /* ===============================================================
-   2. 区域字典（nodes 是 id 数组）
+   2. 区域字典（nodes 是 id 数组）—— v1.9.0b1 共 7 个
+   ---------------------------------------------------------------
+   primaryShelter 必须是本区域自己的节点（强制回家会 visitNode(区域, 该节点)）。
+   unlocked 只有开局区域 wasteland 是 true，其余靠「访问过该区域的任一节点」解锁 ——
+   共享节点被访问时会在它所属的每个区域里都标记一次，所以走到接口就等于
+   把对面那个区域解锁了（但占位区域还没落地，见 placeholder）。
+
+   【placeholder】本块只有 giantwall / wasteland 落地；其余 5 个是占位：
+     nodes 里只放那个共享接口节点（改动 5 要求接口同时出现在两个区域的 nodes 列表里，
+     否则 areasOfNode() 只有 1 个区域，接口就不成其为「共享节点」、白线也没有方向），
+     edges / mainRoads 为空数组，primaryShelter 为 null。
+     玩家点它们会得到「前面的路还没通。」（见 isAreaImplemented）。
    =============================================================== */
 
 export const REGIONS = {
-  home: {
-    id: 'home',
-    name: '家',
+  giantwall: {
+    id: 'giantwall',
+    name: '巨墙',
     type: 'region',
-    nodes: ['home'],
-    neighbors: ['area1', 'newarea1'],
-    primaryShelter: 'home',
-    unlocked: true,
-  },
-
-  /* 北面新区域一：在家正北。home 是三区域共享节点，所以它的西端就是 home */
-  newarea1: {
-    id: 'newarea1',
-    name: '北岸',
-    type: 'region',
-    nodes: ['home', 'na1_main', 'northgate'],
+    nodes: ['wallfoot', 'wallgate'],
     edges: [
-      { from: 'home', to: 'na1_main' },
-      { from: 'na1_main', to: 'northgate' },
+      { from: 'wallgate', to: 'wallfoot' },
     ],
-    mainRoads: [['home', 'na1_main'], ['na1_main', 'northgate']],
-    neighbors: ['home', 'newarea2'],
-    primaryShelter: 'home',
-    unlocked: true,                     /* home 也属于这一区域，开局就该能看到 */
-  },
-
-  /* 北面新区域二：在 area1 正北。northgate 是它的西端，northpass 是它的东端（南出口） */
-  newarea2: {
-    id: 'newarea2',
-    name: '北境',
-    type: 'region',
-    nodes: ['northgate', 'na2_main', 'northpass'],
-    edges: [
-      { from: 'northgate', to: 'na2_main' },
-      { from: 'na2_main', to: 'northpass' },
-    ],
-    mainRoads: [['northgate', 'na2_main'], ['na2_main', 'northpass']],
-    neighbors: ['newarea1', 'area1'],
-    primaryShelter: 'northpass',        /* 区域内没有安全屋节点，强制回家落到南出口 */
+    mainRoads: [['wallgate', 'wallfoot']],
+    neighbors: ['wasteland'],
+    primaryShelter: 'wallgate',
     unlocked: false,
   },
 
-  area1: {
-    id: 'area1',
-    name: '荒原',
+  wasteland: {
+    id: 'wasteland',
+    name: '废城',
     type: 'region',
-    nodes: ['home', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7', 'lighthouse', 'northpass', 'southpass'],
+    /* home + 19 个普通地点 + 4 个接口 */
+    nodes: ['home', 'wallgate', 'northgate', 'eastgate', 'southgate',
+      'plaza', 'mall', 'station', 'park', 'school', 'library', 'church',
+      'apartment', 'hospital', 'gasstation', 'subway', 'watertower',
+      'sewer', 'factoryold', 'warehouse', 'substation',
+      'brokenbridge', 'dump', 'parking'],
+    /* 主干道「比较复杂」：三条主向 + 两条副线 + 一条西向，含环路与分支。
+       基准拓扑按需求逐条落地；park / mall / plaza 是枢纽，
+       substation 与 parking 是南向的双入口。 */
     edges: [
-      { from: 'home', to: 'n1' },
-      { from: 'home', to: 'n2' },
-      { from: 'home', to: 'n3' },
-      { from: 'n1', to: 'n4' },
-      { from: 'n2', to: 'n5' },
-      { from: 'n3', to: 'n6' },
-      { from: 'n4', to: 'n7' },
-      { from: 'n5', to: 'n7' },
-      { from: 'n6', to: 'n7' },
-      { from: 'n7', to: 'lighthouse' },
-      { from: 'n7', to: 'northpass' },   /* 北出口：从岔路口往北 */
-      { from: 'n7', to: 'southpass' },   /* 南出口：从岔路口往南，通黑暗地带 */
+      /* 西向：家 → 墙门 */
+      { from: 'home', to: 'wallgate' },
+      /* 东向主干：家 → 广场 → 商业街 → 车站 → 东关 */
+      { from: 'home', to: 'plaza' },
+      { from: 'plaza', to: 'mall' },
+      { from: 'mall', to: 'station' },
+      { from: 'station', to: 'eastgate' },
+      /* 北向支线：广场 → 公园 → 学校 → 图书馆 → 教堂 → 北关 */
+      { from: 'plaza', to: 'park' },
+      { from: 'park', to: 'school' },
+      { from: 'school', to: 'library' },
+      { from: 'library', to: 'church' },
+      { from: 'church', to: 'northgate' },
+      /* 北向副线：家 → 公寓 → 医院 → 公园（在公园与北向支线汇合） */
+      { from: 'home', to: 'apartment' },
+      { from: 'apartment', to: 'hospital' },
+      { from: 'hospital', to: 'park' },
+      /* 东向副线：商业街 → 地铁口 → 水塔 → 东关（与东向主干构成环路） */
+      { from: 'mall', to: 'subway' },
+      { from: 'subway', to: 'watertower' },
+      { from: 'watertower', to: 'eastgate' },
+      /* 南向支线：家 → 下水道口 → 工厂旧址 → 旧仓库 → 变电所 → 南关 */
+      { from: 'home', to: 'sewer' },
+      { from: 'sewer', to: 'factoryold' },
+      { from: 'factoryold', to: 'warehouse' },
+      { from: 'warehouse', to: 'substation' },
+      { from: 'substation', to: 'southgate' },
+      /* 南向副线：广场 → 断桥 → 垃圾场 → 地下停车场 → 南关（与南向支线构成环路） */
+      { from: 'plaza', to: 'brokenbridge' },
+      { from: 'brokenbridge', to: 'dump' },
+      { from: 'dump', to: 'parking' },
+      { from: 'parking', to: 'southgate' },
+      /* 【超出基准拓扑的一条边】需求给的每一条边里都没有「废弃加油站」，
+         照抄会让它成为一个孤立节点（永远不可达、也不渲染）。
+         这里按最小改动给它挂一条线：公寓 → 废弃加油站。 */
+      { from: 'apartment', to: 'gasstation' },
     ],
-    mainRoads: [['home', 'n2'], ['n2', 'n5'], ['n5', 'n7'], ['n7', 'lighthouse'],
-      ['n7', 'northpass'], ['n7', 'southpass']],
-    neighbors: ['home', 'area2', 'newarea2', 'darkarea'],
+    mainRoads: [
+      ['home', 'plaza'], ['plaza', 'mall'], ['mall', 'station'], ['station', 'eastgate'],
+      ['plaza', 'park'], ['park', 'school'], ['school', 'library'], ['library', 'church'],
+      ['church', 'northgate'],
+      ['home', 'apartment'], ['apartment', 'hospital'], ['hospital', 'park'],
+      ['home', 'sewer'], ['sewer', 'factoryold'], ['factoryold', 'warehouse'],
+      ['warehouse', 'substation'], ['substation', 'southgate'],
+      ['home', 'wallgate'],
+    ],
+    neighbors: ['giantwall', 'wilderness', 'coast', 'industry'],
     primaryShelter: 'home',
-    unlocked: true,
+    unlocked: true,                     /* 开局区域：家在这里 */
   },
 
-  /* 南面新区域：黑暗地带。southpass 是它与 area1 的共享节点（北入口），
-     dark_core 是区域内部的黑暗地点（没电时不能从外面走进去，身处其中电量加速流逝）。 */
-  darkarea: {
-    id: 'darkarea',
-    name: '黑暗地带',
+  /* ================= 以下 5 个是占位（b2 / b3 / b4 落地） ================= */
+
+  wilderness: {
+    id: 'wilderness',
+    name: '荒野',
     type: 'region',
-    nodes: ['southpass', 'dark_core'],
-    edges: [
-      { from: 'southpass', to: 'dark_core' },
-    ],
-    mainRoads: [['southpass', 'dark_core']],
-    neighbors: ['area1'],
-    /* primaryShelter 必须是本区域的节点（强制回家会 visitNode(区域, 该节点)）：
-       没有安全屋节点，就落到北入口，与 newarea2 → northpass 同一套做法。
-       副作用：southpass 因此进了 isShelter 的并集，会像 northpass 一样多出「过夜」选项；
-       但它不回电 —— 回电只认「当前节点是 home」。 */
-    primaryShelter: 'southpass',
-    unlocked: false,                    /* 初始锁定；访问过任一节点即解锁 */
+    placeholder: true,
+    nodes: ['northgate'],               /* 只有接口节点，内部节点等 b3 */
+    edges: [],
+    mainRoads: [],
+    neighbors: ['wasteland'],
+    primaryShelter: null,
+    unlocked: false,
   },
 
-  area2: {
-    id: 'area2',
-    name: '未知地域',
+  industry: {
+    id: 'industry',
+    name: '工业区',
     type: 'region',
-    nodes: ['lighthouse', 'm1', 'm2', 'm3', 'goal2'],
-    edges: [
-      { from: 'lighthouse', to: 'm1' },
-      { from: 'm1', to: 'm2' },
-      { from: 'm2', to: 'm3' },
-      { from: 'm3', to: 'goal2' },
-    ],
-    mainRoads: [['lighthouse', 'm1'], ['m1', 'm2'], ['m2', 'm3'], ['m3', 'goal2']],
-    neighbors: ['area1'],
-    primaryShelter: 'lighthouse',
-    unlocked: false,                    /* 初始锁定；访问过任一节点即解锁 */
+    placeholder: true,
+    nodes: ['southgate'],               /* 只有接口节点，内部节点等 b2 */
+    edges: [],
+    mainRoads: [],
+    neighbors: ['wasteland'],
+    primaryShelter: null,
+    unlocked: false,
+  },
+
+  coast: {
+    id: 'coast',
+    name: '东海岸',
+    type: 'region',
+    placeholder: true,
+    nodes: ['eastgate'],                /* 只有接口节点，内部节点等 b2 */
+    edges: [],
+    mainRoads: [],
+    neighbors: ['wasteland'],
+    primaryShelter: null,
+    unlocked: false,
+  },
+
+  dock: {
+    id: 'dock',
+    name: '码头',
+    type: 'region',
+    placeholder: true,
+    nodes: [],                          /* 与东海岸的接口等 b2 落地时再接 */
+    edges: [],
+    mainRoads: [],
+    neighbors: ['coast'],
+    primaryShelter: null,
+    unlocked: false,
+  },
+
+  island: {
+    id: 'island',
+    name: '孤岛',
+    type: 'region',
+    placeholder: true,
+    nodes: [],                          /* 与工业区的接口等 b2 / b4 落地时再接 */
+    edges: [],
+    mainRoads: [],
+    neighbors: ['industry'],
+    primaryShelter: null,
+    unlocked: false,
   },
 };
 
 /**
  * 区域在大地图上的摆放。
- * 上排：北面两个新区域。newarea1 在 home 正北、newarea2 在 area1 正北，
- *       所以它们的 x 与宽度都跟正下方那一块对齐，竖向连线才是直的。
- * 下排：原有三块坐标一律未动。
- * 南面：darkarea 摆在 area1 正南（x 中心对齐 area1 的 x 中心 520），
- *       与 area1 底边（480）留 20px 空隙给通道标签，且整块不超出画布高 600。
- * 注：现有数据里 home.y(200) 与 area1.y(120) 本来就不相等，
- * 但两者的高度让中心线都落在 y=300，所以「下排在同一水平线上」是成立的；
- * 上排整排压在 y<=110 的空档里，不与下排重叠。
+ *
+ *          wilderness
+ *              |
+ *  giantwall - wasteland - coast - dock
+ *              |
+ *          industry - island
+ *
+ * 【改动 6 依赖这张表】接口节点的延伸白线方向不是手写的，而是用
+ * regionDirection(from, to) 取两块中心的连线主轴算出来的，所以：
+ *   wasteland → giantwall = west、→ wilderness = north、
+ *   → coast = east、→ industry = south   （四个方向全部对上）
+ * 占位区域也必须有坐标，否则方向算不出来、白线就画不了。
  */
 const REGION_BOX = {
-  newarea1: { x: 60, y: 10, w: 200, h: 100 },
-  newarea2: { x: 320, y: 10, w: 400, h: 100 },
-  home: { x: 60, y: 200, w: 200, h: 200 },
-  area1: { x: 320, y: 120, w: 400, h: 360 },
-  area2: { x: 780, y: 120, w: 180, h: 360 },
-  darkarea: { x: 420, y: 500, w: 200, h: 90 },   /* area1 正南（中心 x 与 area1 对齐） */
+  wilderness: { x: 390, y: 10, w: 220, h: 70 },
+  giantwall: { x: 20, y: 130, w: 150, h: 130 },
+  wasteland: { x: 200, y: 110, w: 350, h: 170 },
+  coast: { x: 580, y: 120, w: 170, h: 140 },
+  dock: { x: 790, y: 145, w: 150, h: 90 },
+  industry: { x: 330, y: 330, w: 300, h: 110 },
+  island: { x: 430, y: 480, w: 180, h: 100 },
 };
+
+/**
+ * 改动 6 用：fromArea 看过去，toArea 在哪个方向 —— 'north' | 'south' | 'east' | 'west'。
+ * 按两块在大地图上的中心连线取绝对值较大的那个轴；两块位置重合（或有一块没有坐标）返回 null。
+ * 数据驱动的好处：挪动 REGION_BOX 就能改白线朝向，不需要手写四根线的方向。
+ */
+function regionDirection(fromArea, toArea) {
+  const a = REGION_BOX[fromArea];
+  const b = REGION_BOX[toArea];
+  if (!a || !b) return null;
+  const dx = (b.x + b.w / 2) - (a.x + a.w / 2);
+  const dy = (b.y + b.h / 2) - (a.y + a.h / 2);
+  if (dx === 0 && dy === 0) return null;
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'east' : 'west';
+  return dy >= 0 ? 'south' : 'north';
+}
+
+/** 从节点位置朝某方向画到【地图边框】—— 需求要的就是「一直延伸到边框处」 */
+function borderPoint(p, dir) {
+  if (dir === 'north') return { x: p.x, y: 0 };
+  if (dir === 'south') return { x: p.x, y: VIEW.h };
+  if (dir === 'west') return { x: 0, y: p.y };
+  return { x: VIEW.w, y: p.y };
+}
+
+/**
+ * 该区域是否已经落地（有节点表内容）。占位区域返回 false。
+ * 用途：玩家想切到还没落地的区域时，main.js 打一句「前面的路还没通。」
+ * 判定读的是 region.placeholder 标记，而不是「nodes 是不是空」——
+ * 因为占位区域为了当共享节点，nodes 里必须留着那个接口节点。
+ */
+export function isAreaImplemented(regionId) {
+  const region = getRegion(regionId);
+  return Boolean(region) && region.placeholder !== true;
+}
 
 /* ===============================================================
    3. 查询接口
@@ -251,7 +346,7 @@ export function getCurrentRegion() {
   return getRegion(game.getCurrentArea()) || REGIONS[START_AREA];
 }
 
-/** getNode(id)；也接受 'area2:m1' 这种带区域前缀的写法（id 全局唯一，前缀只是容错） */
+/** getNode(id)；也接受 'island:ferry' 这种带区域前缀的写法（id 全局唯一，前缀只是容错） */
 export function getNode(id) {
   if (id === undefined || id === null) return null;
   const raw = String(id);
@@ -307,7 +402,7 @@ export function isSharedNode(nodeId, areaA, areaB) {
  * 两种情况都算：
  *   1) 数据里 a.neighbors 显式声明了 b —— 这一组还会在大地图上画出连线
  *   2) 两个区域共享同一个节点 —— 玩家就站在那个节点上，本来就该能切过去
- *      （例如 area1 与 newarea1 共享 home，但按方位图它们之间不画连线）
+ *      （例如两个区域共享接口节点时，即使 neighbors 里没写也认得出来）
  */
 export function isAreaNeighbor(areaA, areaB) {
   const region = getRegion(areaA);
@@ -316,18 +411,25 @@ export function isAreaNeighbor(areaA, areaB) {
   return sharedNodes(areaA, areaB).length > 0;
 }
 
-/** 该区域的强制回家送达地 */
+/** 该区域的强制回家送达地；占位区域 primaryShelter 是 null，这时回落到 HOME_ID */
 export function primaryShelterOf(regionId) {
   const region = getRegion(regionId);
-  return region ? region.primaryShelter : HOME_ID;
+  return (region && region.primaryShelter) ? region.primaryShelter : HOME_ID;
 }
 
 /**
- * 是不是安全屋。
- * 新结构里区域只有 primaryShelter、没有 shelters 数组，所以这里取「所有区域 primaryShelter 的并集」
- *（= home 与 lighthouse），这样不论从哪个区域看，灯塔都还是那个能过夜的安全屋。
+ * 是不是安全屋（可过夜 + 带储物箱）。
+ *
+ * v1.9.0b1：判定扩成【共享节点 ∪ 各区域 primaryShelter】。
+ *   前者让四个接口（墙门 / 北关 / 东关 / 南关）自动成为安全屋 ——
+ *   需求改动 5 要的就是这个「接口节点自动成为安全屋」的效果；
+ *   后者保住「家」这个唯一的回电点（家不再是独立区域，靠 wasteland.primaryShelter 进来）。
+ *
+ * 注意：v1.9.0a 里本函数【只有后半段】（所有 primaryShelter 的并集），
+ * 当时共享节点里只有一部分是安全屋（northgate 就不是）。这里按需求的意图改了。
  */
 export function isShelter(nodeId) {
+  if (isPortalNode(nodeId)) return true;
   return Object.values(REGIONS).some((region) => region.primaryShelter === nodeId);
 }
 
@@ -337,8 +439,8 @@ export function isPrimaryShelter(nodeId) {
 }
 
 /**
- * 黑暗地点：节点数据里的 isDark 标记（目前只有 darkarea 的 dark_core）。
- * 判定只看节点自己 —— 入口通道（southpass）没有标记，所以永远不受黑暗规则影响。
+ * 黑暗地点：节点数据里的 isDark 标记（v1.9.0b1 的两块区域里还没有黑暗节点，等荒野落地）。
+ * 判定只看节点自己，不看区域，所以接口节点不需要任何特例。
  */
 export function isDarkNode(nodeId) {
   const node = getNode(nodeId);
@@ -365,11 +467,11 @@ export function isDarkRegion(regionId) {
 /**
  * 该节点是不是「门户」＝安全屋：出现在 ≥ 2 个区域的 nodes 列表里（即共享节点）。
  * 不手写名单，以后新增门户自动就是安全屋。
- *   现状：home（home/newarea1/area1）、lighthouse（area1/area2）、
- *         northpass（area1/newarea2）、northgate（newarea1/newarea2）、southpass（area1/darkarea）
+ *   现状（v1.9.0b1）：wallgate / northgate / eastgate / southgate。
+ *   注意 home 只属于 wasteland 一个区域，所以它【不是】门户 —— 它靠 isShelter 提供过夜与储物箱。
  *
  * 注意它与 isShelter() 的区别：isShelter() 是「所有区域 primaryShelter 的并集」，
- * 决定谁能提供过夜选项与储物箱（含 northpass / southpass，不含 northgate）；
+ * 决定谁能提供过夜选项与储物箱（v1.9.0b1 起 = 共享节点 ∪ primaryShelter，共 5 个）；
  * 本函数只回答「这是不是区域的出入口」，供寻路挑选强制回家的落点。
  */
 export function isPortalNode(nodeId) {
@@ -500,39 +602,17 @@ export function getNodeNoise(nodeId) {
 /**
  * 视觉坐标覆盖表：只影响【绘制】，不影响 computeEdgeCost 用的逻辑坐标（NODES 里的 x/y）。
  *
- * 为什么需要它：lighthouse 是共享节点，只有一个逻辑坐标，而它必须同时
- * 是 area1 的最东端、又是 area2 的最西端 —— 一个 x 做不到。
- * 所以把「区域内部要显示成西→东」这件事放在视觉层解决，逻辑层一动不动。
+ * 为什么需要它：wallgate 是共享节点，只有一个逻辑坐标，而它必须同时
+ * 是废城的最西端（贴西边框、白线往西）、又是巨墙的最东端（贴东边框、通往废城）——
+ * 一个 x 做不到。所以把这件事放在视觉层解决，逻辑层一动不动。
  *
- * area1 的逻辑坐标本来就是 home < 中间 < lighthouse，无需覆盖，故不列。
- * area2 的逻辑 x 是 lighthouse(800) → goal2(140)（从东往西），
- * 这里把它的视觉 x 反过来排，变成 lighthouse(140) → goal2(780)（从西往东）。
- * y 沿用各节点原有的高度，只调 x 的单调性。
+ * 废城不需要覆盖：wallgate(95,170) 本来就是西侧。
+ * 巨墙需要：wallgate 在这里当东端。
+ * 逻辑坐标（算费用）一个都没动：wallgate(95,170) ↔ wallfoot(350,300) = 286 → 858 秒。
  */
 const REGION_VIEW_POS = {
-  area2: {
-    lighthouse: { x: 140, y: 300 },
-    m1: { x: 300, y: 120 },
-    m2: { x: 460, y: 300 },
-    m3: { x: 620, y: 120 },
-    goal2: { x: 780, y: 300 },
-  },
-
-  /* newarea2：northgate 在 newarea1 那侧是最东端，到这里要当最西端；
-     northpass 在 area1 那侧是北出口，到这里当东端（略偏南，指向回 area1 的路）。
-     na2_main 只在这一区域出现，逻辑坐标就是视觉坐标，不需要覆盖。
-     newarea1 同理不需要覆盖：home(80) < na1_main(330) < northgate(580) 本来就单调。 */
-  newarea2: {
-    northgate: { x: 80, y: 240 },
-    northpass: { x: 620, y: 360 },
-  },
-
-  /* darkarea：southpass 在 area1 那侧是南出口（逻辑 y = 540），到了本区域要当【北入口】，
-     所以视觉上抬到 y = 120；dark_core 只在这一区域出现，逻辑坐标 (660,300) 就在它下面，
-     正好读成「北入口 → 往南进入黑暗」，不需要覆盖。
-     逻辑坐标（算费用）一个都没动：southpass(660,540) ↔ dark_core(660,300) = 240 → 720 秒。 */
-  darkarea: {
-    southpass: { x: 660, y: 120 },
+  giantwall: {
+    wallgate: { x: 940, y: 300 },
   },
 };
 
@@ -575,8 +655,8 @@ export function computeClickable(regionId, visited) {
 
 /**
  * 某节点是否「被访问过」—— 跨区域判定。
- * home / lighthouse 是共享节点：访问记录可能只落在它所属的另一个区域里
- *（例如开局站在家里，visitedByArea.home 里有 'home'，但 visitedByArea.area1 里没有）。
+ * 接口节点是共享节点：访问记录可能只落在它所属的另一个区域里
+ *（例如开局站在家里，wasteland 里有 'home'；走到北关则 wasteland 与 wilderness 各记一次）。
  * 所以判断某一区域的可见性时，不能只看本区域那个 Set。
  */
 export function isNodeVisited(nodeId) {
@@ -653,8 +733,8 @@ function buildAdjacency(regionId, visited = null) {
  *
  * 这条规则自然满足跨区域语义：
  *   - 玩家从哪个共享节点进来，那条边两端都已访问＝已探明，所以能原路退回
- *   - area1 里只要区域内已探明路径通到 home，home 就可点（不算绕路）
- *   - newarea2 里 home 虽然在节点列表里，但已探明路径通不过去，于是不可点
+ *   - 废城里只要区域内已探明路径通到 home，home 就可点（不算绕路）
+ *   - 例如在巨墙里，废城的那些节点根本不在本区域列表里，自然不会出现在图上
  *
  * @returns {Set<string>} 可达的已访问节点（不含 fromId 自身）
  */
@@ -1041,7 +1121,7 @@ function renderArea(regionId) {
   if (!region) return;
 
   /* 遍历的是 region.nodes 全量；访问状态用跨区域的 getVisitedIn，
-     否则站在家里切进 area1 时本区域 Set 是空的，整个地图会什么都不画 */
+     否则站在家里切进巨墙时本区域 Set 是空的，整个地图会什么都不画 */
   const visited = getVisitedIn(regionId);
   const here = currentNode;
 
@@ -1101,6 +1181,29 @@ function renderArea(regionId) {
     const line = svgNode('line', { class: 'road', x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y });
     layers.roads.appendChild(line);
     edgeEls.push({ from: edge.from, to: edge.to, el: line });
+  }
+
+  /* 【改动 6】接口节点的「延伸白线」：从接口位置朝它所连接的另一个区域的方向，
+     一直画到地图边框。样式与主干道白线完全一致（同一个 .road 类，不新增任何 CSS）。
+     方向不是手写的，而是按 REGION_BOX 的方位算出来的（见 regionDirection）。
+     只从【共享节点】伸出去，并且只伸向「另一个区域」那一侧。
+
+     未落地的区域（荒野 / 工业区 / 东海岸）同样画：尽头暂时没有对应节点，
+     b2 / b3 落地后自然接上。这些线是纯装饰 —— 不绑任何事件、
+     不进 nodeEls / edgeEls，所以既不参与点击，也不参与可达性判定。 */
+  for (const id of region.nodes) {
+    if (!states.get(id)) continue;                 /* 节点没渲染 → 它的白线也不画 */
+    for (const otherArea of areasOfNode(id)) {
+      if (otherArea === regionId) continue;        /* 自己这一侧不画 */
+      const dir = regionDirection(regionId, otherArea);
+      if (!dir) continue;
+      const p = drawPos(getNode(id), regionId);
+      const end = borderPoint(p, dir);
+      layers.roads.appendChild(svgNode('line', {
+        class: 'road region-spoke',
+        x1: p.x, y1: p.y, x2: end.x, y2: end.y,
+      }));
+    }
   }
 
   for (const id of region.nodes) {
@@ -1227,8 +1330,8 @@ function handleClick(event) {
 
 /**
  * 区域解锁 = 数据里的初始 unlocked 标记，或【访问过该区域任一节点】。
- * area1 的初始标记是 true：否则开局访问数为 0，area1 在大地图上根本不会渲染，
- * 玩家就没有入口从「家」区域走到 area1。
+ * wasteland 的初始标记是 true：否则开局访问数为 0，它在大地图上根本不会渲染，
+ * 玩家就没有入口从家走出去（其余区域靠「走到接口节点」解锁）。
  */
 export function isAreaUnlocked(regionId) {
   const region = getRegion(regionId);

@@ -9,22 +9,28 @@ import { STAMINA_MAX_INIT, BATTERY_MAX, STORAGE_CAPACITY, EVENTS_DEFAULT } from 
 import { ITEMS } from './texts.js';
 
 /**
- * 初始放在储物箱里的物品。
- * 多区域需求：怀表（pocketwatch）已移到「灯塔」节点的 items，不再开局给。
+ * 初始放在储物箱里的物品（v1.9.0b1 重定）。
+ * 这 3 件放进「家」的储物箱；日记 / README 是 a 块的文本性物品，也挂在家储物箱，
+ * 但它们不进 ITEMS 表、也不在这个数组里。
+ * 其余安全屋的储物箱开局为空（首次用到时惰性建空箱）。
+ * 怀表（pocketwatch）不再开局给，改为放在废城的「断桥」节点上。
  */
-const INITIAL_STORAGE = ['coat', 'jeans', 'flashlight', 'torch', 'oldmap'];
+const INITIAL_STORAGE = ['cannedfood', 'coat', 'jeans'];
 
 export const state = {
   day: 1,
   elapsedSeconds: 0,
-  currentArea: 'home',         /* 当前所在区域：'home' | 'area1' | 'area2'；开局在 home */
+  /* 当前所在区域：v1.9.0b1 起开局区域是「废城」wasteland（家是废城里的一个节点）。
+     必须与 map.js 的 START_AREA 保持一致 —— 两处不一致的话，
+     getNodeIds(开局区域) 会是空数组，玩家一步都走不动。 */
+  currentArea: 'wasteland',
   mapView: 'world',            /* 地图视图：'world' 大地图 / 'area' 区域地图 */
   currentNode: null,
   visitedByArea: {},           /* areaId -> Set<nodeId>，各区域的已访问节点分开记 */
   stamina: STAMINA_MAX_INIT,
   staminaMax: STAMINA_MAX_INIT,
   battery: BATTERY_MAX,
-  sheltersByArea: {},           /* shelterKey('area1:home') -> Item[]，各安全屋储物箱互相隔离 */
+  sheltersByArea: {},           /* shelterKey（＝安全屋节点 id，如 'home' / 'wallgate'）-> Item[]，各安全屋储物箱互相隔离 */
   storageCapacityByShelter: {}, /* shelterKey -> number，各安全屋容量互相独立 */
   equipped: { hand: null, torso: null, legs: null, back: null },
   pocket: [],
@@ -68,7 +74,7 @@ export function setMapView(view) {
   return state.mapView;
 }
 
-/* 关于储物键：节点 id 已全局唯一（home / lighthouse / n1 …），
+/* 关于储物键：节点 id 已全局唯一（home / wallgate / northgate …），
    所以不再需要 'areaId:nodeId' 这种键，直接用节点 id 作键。
    getShelterStorage(nodeId) / getStorageCapacity(nodeId) 等接口签名不变。 */
 
@@ -76,7 +82,7 @@ export function setMapView(view) {
 
 /**
  * 标记某节点在某区域内已访问。
- * 共享节点（home、lighthouse）需要由调用方对每个所属区域各调一次 —— main.js 负责这件事，
+ * 共享节点（墙门 / 北关 / 东关 / 南关）需要由调用方对每个所属区域各调一次 —— main.js 负责这件事，
  * 因为「哪些区域含这个节点」是 map.js 的知识，state.js 不认识区域表。
  */
 export function markVisited(areaId, nodeId) {

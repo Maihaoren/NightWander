@@ -14,8 +14,8 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0a` | 面向玩家的游戏版本 |
-| `VERSION` | `v6/js/saveSystem.js` | `3` | **存档结构**版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b1` | 面向玩家的游戏版本 |
+| `VERSION` | `v6/js/saveSystem.js` | `4` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
 **只要 `VERSION` 变了，本文件必须写明「旧存档能否加载」。**
@@ -34,6 +34,151 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.9.0b1] — 2026-10-11 —— **破坏性**：地图重做第 1 块（7 区域注册表 + 巨墙/废城 + 白线 + 存档 v3 → v4）
+
+**回档点 / git 标签**：`v1.9.0b1`
+
+> ⚠️ **破坏性变更**：存档结构 `v3` → **`v4`**，**旧存档一律不兼容**（导入返回 null → 提示「存档版本过旧，无法加载」）。
+> 旧 6 个区域与全部旧节点 id 都删掉了，旧存档里的 `visitedByArea` / `sheltersByArea` /
+> `usedOptions` 全是已经不存在的键，无法映射，因此**不做迁移**。
+> 本块是 b 块（地图重做）的 **4 块中的第 1 块**，只落地「巨墙」与「废城」。
+
+### 新增
+
+- **7 区域注册表**（旧的 home / area1 / area2 / newarea1 / newarea2 / darkarea 全部废弃）：
+
+  | 区域 id | 显示名 | primaryShelter | 状态 |
+  |---|---|---|---|
+  | `giantwall` | 巨墙 | `wallgate` | **本块落地**（2 节点） |
+  | `wasteland` | 废城 | `home` | **本块落地**（24 节点） |
+  | `wilderness` | 荒野 | `null` | 占位（b3） |
+  | `industry` | 工业区 | `null` | 占位（b2） |
+  | `coast` | 东海岸 | `null` | 占位（b2） |
+  | `dock` | 码头 | `null` | 占位（b4） |
+  | `island` | 孤岛 | `null` | 占位（b2 / b4） |
+
+- **巨墙**：`wallfoot`（墙根，无任何交互）+ `wallgate`（墙门，与废城共享、也是巨墙的主安全屋）。
+  墙根到达文本按需求原文：「自从大爆炸后他们就建立了这堵墙，到现在已经矗立了十几年了。」
+- **废城 24 个节点** = 家 1（`home`）+ 普通 19 + 接口 4。家不再是独立区域，降级成废城里的一个节点，
+  仍是唯一回电点、仍带储物箱。
+- **4 个接口节点（共享）**：`wallgate`（西→巨墙）、`northgate`（北→荒野）、
+  `eastgate`（东→东海岸）、`southgate`（南→工业区）。每个都同时出现在两个区域的 `nodes` 里，
+  因此自动成为共享节点、自动成为安全屋。
+- **接口白线延伸（改动 6）**：区域地图里，接口节点朝它连接的另一个区域方向拉一根白线，
+  一直画到地图边框。`class="road region-spoke"` —— 与主干道同一个 `.road` 类，**没有新增任何 CSS**。
+  方向不是手写的：`regionDirection()` 按 `REGION_BOX` 的两块中心连线取主轴算出来。
+  未落地区域的白线同样画（尽头暂时没有节点，b2/b3 落地后自然接上）。
+- **未实现区域提示（改动 7）**：`isAreaImplemented()` + `UI.roadNotOpen`（「前面的路还没通。」）。
+  荒野 / 工业区 / 东海岸 / 码头 / 孤岛 5 个占位区域带 `placeholder: true`；
+  玩家站在接口节点上、在大地图点它们时给这句提示，不会切过去。
+- **物品**：新增 `cannedfood` 罐头（无槽位、不提供格子，使用效果在 c 块）。
+
+### 变更
+
+- **物品表精简**：删除 `flashlight` 手电筒 / `torch` 火把 / `oldmap` 古老地图 /
+  `compass` 黄铜罗盘 / `darkshard` 黑曜石碎片；`coat` pockets 3 → 1、`jeans` pockets 2 → 1
+  （描述里的「三个深口袋」「两个后袋」同步改成一个，免得文案与数值对不上）；
+  `pocketwatch` 怀表保留不动。
+  容量口径：手持保底 1 + 大衣 1 + 牛仔裤 1 = **起步 3 格**（c 块加挎包 +2 = 5、大背包 +4 = 7）。
+- **初始储物箱**：`INITIAL_STORAGE` 由 `['coat','jeans','flashlight','torch','oldmap']`
+  改为 **`['cannedfood','coat','jeans']`**。日记 / 作者留言（a 块）仍挂在家储物箱；其余安全屋开局为空。
+- `state.currentArea` 初值 `'home'` → **`'wasteland'`**（必须与 `map.START_AREA` 一致，
+  否则 `getNodeIds(开局区域)` 是空数组、一步都走不动）。
+- **`isShelter()` 判定扩成「共享节点 ∪ 各区域 primaryShelter」**。
+  需求说「按现有『安全屋 = 所有共享节点』判定」——**v1.9.0a 其实不是这样**（那时只是所有
+  primaryShelter 的并集，共享节点里只有一部分是安全屋）。按需求的意图改成了并集，
+  于是 4 个接口自动成为安全屋（可过夜 + 带储物箱），家仍靠 `wasteland.primaryShelter` 进来。
+- `primaryShelterOf()` 在 `primaryShelter` 为 null（占位区域）时回落到 `HOME_ID`，避免强制回家把人送到 null。
+- `saveSystem.js`：`VERSION` 3 → 4。**字段表没有增删**（仍与 `REQUIRED` 一致），只换版本号。
+- `GAME_VERSION`：`v1.9.0a` → `v1.9.0b1`。
+
+### 移除
+
+- 旧 6 个区域、旧 19 个节点、旧地点文案（`SCENES` 从 16 项换成 25 项；只保留「家」的 ASCII 画面）。
+- `main.js` 里指向已删节点的死代码：`enterCave()`、`hasLight()`、`OPTION_HANDLERS.n3`、
+  街角老钟分支（`n2`）、`TIME_TEXTS.street`、终点判定 `GOAL2_ID`（`goal2`）、未再使用的 `SCENES` / `firstVisit`。
+- `UI.foundJourneyEnd` / `crossRegionWalk` / `foundLighthouse` / `lookTime` 四条失效文案
+  （都指向已删节点或早已无人引用）。
+
+### 修复
+
+- **`events.js` 的随机刷物品候选表引用了 3 个已删物品 id**（`['compass','pocketwatch','darkshard','oldmap']`）。
+  留着会刷出 `ITEMS` 里不存在的 id：`spawnItemOnNode` 直接返回 false，
+  但事件的 effectText 照样写「获得 1 件物品」——玩家白高兴一场。
+  改为 `['cannedfood']`，并**刻意排除怀表**：它是「断桥」上唯一的任务物品，
+  而 `collectedItems` 按物品 id 记，一旦随机刷出第二块并被捡走，断桥那块也会一起消失。
+
+### 变更清单
+
+| 文件 | 改动 |
+|---|---|
+| `v6/js/map.js` | REGIONS 7 个（含 5 个 placeholder）；NODES 25 个；废城 26 条边 + mainRoads；REGION_BOX 换成 7 块并新增 `regionDirection` / `borderPoint`；`REGION_VIEW_POS` 换成巨墙一处覆盖；`isShelter` 扩展；新增 `isAreaImplemented`；`primaryShelterOf` 空值兜底；`renderArea` 加接口白线；`REQUIRES` 清空（旧规则挂在已删节点上） |
+| `v6/js/texts.js` | ITEMS 精简为 4 件；SCENES 换成本块 25 个节点；新增 `UI.roadNotOpen`；删 4 条失效文案 |
+| `v6/js/state.js` | `INITIAL_STORAGE` 重定；`currentArea` → `wasteland` |
+| `v6/js/main.js` | `onRegionClick` 加未实现区域拦截；删指向已删节点的死代码；`RECHARGE_NODE` 注释更新（取值不用改） |
+| `v6/js/saveSystem.js` | `VERSION` 3 → 4 |
+| `v6/js/events.js` | `SUPPLY_ITEMS` 修剪为 `['cannedfood']` |
+| `v6/js/config.js` | `GAME_VERSION` → `v1.9.0b1` |
+| `v6/js/debug.js` / `modal.js` | 仅注释（示例里的旧 id 换成新 id） |
+| `v6/js/inventory.js` / `terminal.js` / `v6/style.css` / `v6/index.html` | **未改动** |
+
+### 验证
+
+- 新增 `.tools/nw_b1_check.mjs`：**84 条断言，全部通过**，逐条覆盖 9 个改动：
+  - 改动 1：ITEMS 恰为 4 件、5 件已删物品确认不在、大衣/牛仔裤格数、怀表未动、罐头字段与描述、
+    日记/README 仍不在 ITEMS、**起步容量实测 = 3**。
+  - 改动 2：家储物箱开局正好 `cannedfood/coat/jeans`，旧 5 件一件不留，其余安全屋开局为空。
+  - 改动 3：7 区域的 id/显示名/顺序；旧 6 区确认废弃；5 个占位区的 `placeholder` / 空 edges /
+    `primaryShelter: null`；`START_AREA` 与 `state.currentArea` 一致。
+  - 改动 4：巨墙 2 节点、废城 24 节点、全局去重 25；**需求给的 25 条基准边一条不少**；
+    只多出「公寓→废弃加油站」一条（见下）；废城连通 + 有环路 + park/plaza/mall 是枢纽 +
+    substation/parking 双入口；墙根文案一字不差且无任何交互；怀表在断桥；
+    **节点两两间距最小值 = 106**（≥100）。
+  - 改动 5：4 个接口各自恰好属于两个区域、没有第 5 个共享节点；4 个接口 + 家都是安全屋；
+    家不是门户；**端到端**：站在北关上按钮行确实出现「过夜 / 稍作停留」。
+  - 改动 6：**刚开局只渲染墙门 → 只有 1 根白线**（白线跟着节点渲染走，沿用既有「不泄露没走过的地图」机制）；
+    4 个接口都访问过后 → **正好 4 根，方向西/北/东/南各一，末梢都落在地图边框上，
+    每根起点都等于对应接口的绘制坐标**；巨墙视图里 wallgate 的白线指向东；
+    用的是同一个 `.road` 类；`style.css` 里没有 `region-spoke`。
+  - 改动 7：`isAreaImplemented` 7 个区域逐一；走到北关把荒野解锁、大地图上出现荒野；
+    点它 → 「前面的路还没通。」且**真的没切过去**；对照：站到墙门上点巨墙能正常切区域；
+    站错节点则走既有的「你不在通往那里的路上。」
+  - 改动 8：`SAVE_VERSION = 4`；往返可读；`peekVersion` 4；
+    **伪造字段齐全但版本号 3、且带旧区域键的存档 → deserialize 返回 null**；快照字段表未增删。
+  - 改动 9 + a 块回归：家过夜电量回满 100、接口安全屋过夜只扣跨天 5（不回电）；
+    旧 3 个储物箱节点确认不存在；墙门惰性建空箱；**a 块的日记 / 作者留言仍可读且输出格式不变**。
+- **反证**：把 `onRegionClick` 里的未实现区域拦截临时去掉 → 立刻 2 条 FAIL
+  （提示没打、而且真的切进了空区域），确认这道门是**承重**的；随后已还原并复测全绿。
+- 冒烟：`nw_boot_check.mjs`（开局 wasteland/home、只有废城解锁）、`nw_link_check.mjs`、
+  `nw_r13_check.mjs` / `nw_r14_check.mjs`、`v6/js` 全部文件 `node --check` 均通过。
+- **旧套件 `nw_r8`–`nw_r16`（含 `nw_e2e2`、`nw_r14_hover`）已作废**：本块把旧地图整张删掉了，
+  它们引用旧区域/旧节点，已不可能通过，已在文件头标注「已作废，保留仅为留档」。
+
+### 已知限制 / 遗留
+
+- **本块没有终局**：旧的 `goal2`（旅者之石）随旧地图删除，终点判定一并移除。
+  灯塔在码头区域（占位），等 b4 落地后再把「到达即游戏结束」接回来。
+- **缺一条边的补齐（刻意偏离基准拓扑）**：需求给的每条边里都没有「废弃加油站」，
+  照抄会让 `gasstation` 成为孤立节点（永远不可达、也不渲染）。这里按最小改动补了
+  **`apartment → gasstation`** 一条；想挂到别处说一声即可换。
+- **白线跟着节点渲染走**：没渲染出来的接口（未访问且与当前节点不相邻）连白线一起不画。
+  这是沿用既有的「不泄露没走过的地图结构」机制；如果你希望一进废城就看见 4 根白线，
+  需要另外给它开例外（本块没开）。
+- **`home` 的到达描述改了一句**：原来写「一间靠海的小屋」（旧地图里家是靠海的），
+  现在家在废城内部，所以改成「一间勉强还算完整的屋子，窗台上摆着昨天捡回来的石头。」
+- **两块区域都没有 `dark` 节点 / `mustResolve` 节点 / 任何 `options`**：
+  需求的改动 1/4/5 只要求「节点 + 文案 + 拓扑 + 物品放置」，交互与钥匙逻辑在 c 块。
+  因此 `map.js` 的 `REQUIRES` 与 `main.js` 的 `OPTION_HANDLERS` 机制保留但都是空表。
+- **随机刷物品候选只剩 1 件**（罐头），同一节点上已有罐头时刷不出来；
+  等物品表在 b2+ 变丰富之后再补候选（见上文的「修复」一节）。
+- **25 个节点挤在一张 1000×600 的画布上**：最近的一对（station ↔ subway）间距 106，
+  叠加 ±35 的固定伪随机偏移后个别节点视觉上可能轻微贴边或重叠。
+  坐标是按需求「沿用现有伪随机偏移机制、可按方位微调」放的，本块没有改噪声范围。
+- 旧套件的 `nw_r17_check.mjs`（v1.9.0b 的实验版新地图）与本次实现**不是同一套 id**，
+  已随那次回退一起作废，不要再参考。
 
 ---
 

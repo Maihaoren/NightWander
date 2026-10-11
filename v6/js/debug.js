@@ -253,7 +253,7 @@ function execute(input, state, ctx) {
         const rows = ctx.nodes().map((n) => `${n.id.padEnd(12)}${n.name}`);
         return [`当前区域（${state.currentArea}）可传送的节点：`, ...rows].join('\n');
       }
-      /* 支持 /goto area2:m1 的跨区域写法；不带冒号即当前区域的节点 */
+      /* 支持 /goto coast:eastgate 的跨区域写法；不带冒号即当前区域的节点 */
       const spec = String(tokens[1]);
       const sep = spec.indexOf(':');
       const areaId = sep >= 0 ? spec.slice(0, sep) : undefined;

@@ -8,11 +8,11 @@ import {
   STAMINA_MIN, BATTERY_MAX, FORCE_HOME_PENALTY, MOVE_STAMINA_COST, TICK_INTERVAL_MS, DEBUG_CONSOLE,
   SHELTER_OVERNIGHT_COST_SEC, EVENTS_DEFAULT, EVENT_HOVER_SHOW_EFFECT,
 } from './config.js';
-import { UI, SCENES, ITEMS, DOCUMENTS } from './texts.js';
+import { UI, ITEMS, DOCUMENTS } from './texts.js';
 import {
   initMap, refreshMap, setMapView, getNode, getNodes, getRegion, getNodeIds,
   isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
-  isSharedNode, primaryShelterOf, getVisitedIn,
+  isSharedNode, primaryShelterOf, getVisitedIn, isAreaImplemented,
   reachableVisited, hasDirectEdge, calcMoveDuration, clearMoveDurationCache, REGIONS, HOME_ID,
   isDarkNode, isNodeBlockedByDarkness, findNearestReachableShelter,
 } from './map.js';
@@ -27,14 +27,14 @@ import * as events from './events.js';
 
 const THEME_KEY = 'nightwander:theme';
 
-/** 终点节点：首次到达即结束。旧版的 GOAL_ID 已随 map.js 重写移除，终点改为 area2 的旅者之石 */
-const GOAL2_ID = 'goal2';
-
 /**
- * 回电地点：只有【家节点】。v1.8.5 起这里写的是「当前区域是 home」，
- * 于是站在 area1 / newarea1 里的 home 节点过夜不回电 —— 那一版按区域判断是错的。
- * 节点 id 全局唯一，所以按节点判断：走到哪个区域的 home，都在自己家里。
- * 灯塔 / 北关口 / 南关口这些安全屋不回电。
+ * 回电地点：只有【家节点】。
+ * 节点 id 全局唯一，所以按节点判断而不按区域判断：走到哪个区域的 home 都在自己家里。
+ * v1.9.0b1：家不再是独立区域，而是「废城」里的一个节点，本常量与取值都不用改。
+ * 其余安全屋（墙门 / 北关 / 东关 / 南关这些接口）过夜不回电。
+ *
+ * 【注意】v1.9.0b1 起终点节点（旧的 goal2）随旧地图一起删掉了，
+ * 这里不再有 GOAL2_ID —— 终局（灯塔）等 b4 把码头落地后再接上。
  */
 const RECHARGE_NODE = HOME_ID;
 
@@ -68,7 +68,7 @@ function switchMapView(view) {
 
 /**
  * 「返回」按钮的点击目标跟着上下文走（上一条补丁只改了文案、没改 target，是 bug）：
- *   在大地图上   → 回到【玩家当前所在区域】的区域地图（不是固定的 area1）
+ *   在大地图上   → 回到【玩家当前所在区域】的区域地图（不是固定的某个区域）
  *   在区域地图上 → 回到大地图
  * 文案同步：大地图上显示「返回区域地图」，区域地图上显示「返回大地图」。
  */
@@ -426,21 +426,6 @@ function isMustResolvePending(nodeId) {
 
 /* ---------------- 选项 ---------------- */
 
-function hasLight() {
-  const hand = game.getEquipped().hand;
-  if (hand && (hand.id === 'flashlight' || hand.id === 'torch')) return true;
-  return game.getPocket().some((item) => item.id === 'flashlight' || item.id === 'torch');
-}
-
-function enterCave() {
-  if (!hasLight()) {
-    terminal.log(SCENES.n3.caveDark);
-    return;
-  }
-  terminal.log(SCENES.n3.caveLit);
-  setSceneArt(SCENES.n3.altAscii);
-}
-
 /** 是否持有某件物品（口袋或任一装备槽） */
 function hasItem(id) {
   if (game.getPocket().some((item) => item.id === id)) return true;
@@ -453,18 +438,18 @@ function hasItem(id) {
  * systemOption 标记：这是**系统附加入口**，不是玩家在当前地点要做的决定。
  * 它照常出现在终端选项行与按钮行里（那才是设计中的合法入口），
  * 但不许进 mustResolve 弹窗 —— 见 resolveMustResolve 里的过滤。
+ *
+ * v1.9.0b1：旧的「n2 街角老钟」分支随 n2 节点一起删掉了；
+ * 终点判定（原 GOAL2_ID）也一并移除，等 b4 用灯塔重做。
  */
 function ensureTimeOption(node) {
-  if (node.id === GOAL2_ID) return null;
   if (node.id === HOME_ID) return { text: '看一眼墙上的老钟', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'home', systemOption: true };
-  if (node.id === 'n2') return { text: '查看街角的老钟', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'street', systemOption: true };
   if (hasItem('pocketwatch')) return { text: '掏出怀表看一眼', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'watch', systemOption: true };
   return null;
 }
 
 const TIME_TEXTS = {
   home: (t2) => `家里的老钟显示 ${t2}`,
-  street: (t2) => `街道尽头矗立着那块古老的钟，指针停在 ${t2}`,
   watch: (t2) => `怀表显示：${t2}`,
 };
 
@@ -490,9 +475,12 @@ const SHELTER_OPTIONS = [
   { text: UI.importSave, repeatable: true, timeCost: 0, batteryCost: 0, save: 'import' },
 ];
 
-const OPTION_HANDLERS = {
-  n3: { 1: enterCave },              /* 序号 1 对应 SCENES.n3 的「进入洞穴」 */
-};
+/**
+ * 「按节点 id + 选项序号挂 handler」的旧机制。
+ * v1.9.0b1：唯一一条规则挂在 n3（幽暗洞穴）上，该节点随旧地图一起删了，所以本表暂时为空 ——
+ * 机制原样保留，buildOptions() 的查表逻辑一行没动，以后挂选项时往这里补即可。
+ */
+const OPTION_HANDLERS = {};
 
 /* 按 option.kind 挂 handler：安全屋选项是运行时生成的，用序号会随插队错位 */
 const KIND_HANDLERS = { overnight: overnightAtShelter, stay: stayAtShelter };
@@ -555,7 +543,7 @@ async function travelTo(id) {
   if (!getNodeIds(area).includes(id)) return;
 
   /* 没电时不能进入黑暗地点：点击一律无效（静默，与其它不可点情形一致）。
-     southpass 只是通道、没有 isDark 标记，所以不受这条限制。 */
+     接口节点（墙门 / 北关 / 东关 / 南关）没有 isDark 标记，所以不受这条限制。 */
   if (isNodeBlockedByDarkness(id)) return;
 
   /* 可点性：已访问的走「已探明路径连通」，未访问的只看是否与当前节点直接相邻。
@@ -572,7 +560,6 @@ async function travelTo(id) {
   const move = calcMoveDuration(here, id, area, visitedIn);
   if (!move) return;
   clearMoveDurationCache();                           /* 用完即作废，免得影响下一步的预览 */
-  const firstVisit = !game.isVisited(area, id);
 
   pendingMove = { fromId: here, toId: id, seconds: move.seconds, display: move.display };
 
@@ -593,14 +580,8 @@ async function travelTo(id) {
   await arriveAt(node);                              /* 5 正常到达流程 */
   if (game.isGameOver()) return;
 
-  if (id === GOAL2_ID && firstVisit) {               /* 终点：首次到达即结束 */
-    terminal.log(UI.foundJourneyEnd);
-    game.setGameOver(true);
-    time.stopClock();
-    terminal.setLocked(true);
-    renderStatusBar();
-    return;
-  }
+  /* v1.9.0b1：终点判定（旧 goal2 / 旅者之石）随旧地图删除，本块没有终局节点。
+     灯塔在码头区域，等 b4 把码头落地后再在这里重做「到达即游戏结束」。 */
 
   /* 5.5 【事件触发点一】移动到达节点时掷一次。
         放在到达流程之后、体力负值判断之前：
@@ -686,6 +667,7 @@ async function resolveMustResolve(node) {
  *   相邻区域 + 站在共享节点上 → 允许切换（不消耗体力与时间）
  *   相邻区域但不在共享节点上  → 「你不在通往那里的路上。」
  *   不相邻                    → 「你无法直接前往那里，需要走陆路。」
+ *   目标区域还是占位（v1.9.0b1）→ 「前面的路还没通。」
  * 未解锁区域根本不会渲染，所以走不到这里。
  */
 async function onRegionClick(areaId) {
@@ -699,6 +681,13 @@ async function onRegionClick(areaId) {
 
   if (!isAreaNeighbor(current, areaId)) {
     terminal.log(UI.cannotGoDirectly);
+    return;
+  }
+  /* 【改动 7】目标区域还是占位（荒野 / 工业区 / 东海岸 / 码头 / 孤岛）：
+     站在接口节点上也会点得到那块区域，但它节点表还没落地，走不过去。
+     这一句同时也是「延伸白线点不动」的说明 —— 白线本身没绑事件。 */
+  if (!isAreaImplemented(areaId)) {
+    terminal.log(UI.roadNotOpen);
     return;
   }
   if (!isSharedNode(game.getCurrentNode(), current, areaId)) {
@@ -1215,7 +1204,7 @@ function redrawShelterQuietly() {
 
 /**
  * 黑暗地点断电：身处黑暗地点（isDark 节点）时电量归零 ——
- *   送回【当前节点可达的最近门户（安全屋）】（darkarea 里就是 southpass）+ 天数 +1 + 时间归零 + 体力回满，
+ *   送回【当前节点可达的最近门户（安全屋）】+ 天数 +1 + 时间归零 + 体力回满，
  *   电量是否回满取决于落点：落点是 home 节点才回满（全局规则，落点是别的门户则保持 0），
  *   且**不扣体力上限**（这是与体力归零强制回家的唯一区别），所以不会因此 gameOver。
  *
@@ -1256,14 +1245,14 @@ function onBatteryCollapse() {
   terminal.log(UI.darkCollapse);
 
   /* 1 传送回【当前节点可达的最近门户（安全屋）】：与体力归零 / 天亮强制回家同一条规则。
-       黑暗地点只在 darkarea 里，探明图上离它最近的门户就是 southpass。 */
+       本块的两块区域里还没有黑暗节点，等荒野（b3）落地后这条路径才会真正被用到。 */
   const area = game.getCurrentArea();
   const shelterId = forceHomeTarget();
   visitNode(area, shelterId);
 
   /* 2 结算：天数 +1、时间归零、体力回满。
        电量回满与否交给 settleNight 的全局规则（落点 === home 才回电）；
-       darkarea 里最近的门户是 southpass，所以正常情况电量保持 0。
+       darkarea/接口节点不是回电点，落点在那儿时正常情况电量保持 0。
        注意这里【没有】setStaminaMax(...)，体力上限一分不扣。
        结算读的就是上面 visitNode 换过之后的当前节点。 */
   settleNight();
@@ -1300,9 +1289,9 @@ function settleNight() {
   time.drainBatteryOnDayChange();
   game.setElapsedSeconds(0);             /* 2 */
   game.setStamina(game.getStaminaMax()); /* 3 */
-  /* 4 只有【家节点】回电：灯塔 / 北关口 / 南关口这些安全屋过夜不回电。
-       按节点判断，所以在 area1 / newarea1 里走到 home 也算在家。
-       黑暗断电送回的是 darkarea 的 southpass，所以那条路径不回电。 */
+  /* 4 只有【家节点】回电：墙门 / 北关 / 东关 / 南关这些接口安全屋过夜不回电。
+       按节点判断，不管从哪个区域走到 home 都算在家。
+       黑暗断电送的落点是接口节点，所以那条路径不回电。 */
   if (game.getCurrentNode() === RECHARGE_NODE) game.setBattery(BATTERY_MAX);
   game.clearPerDayOptions();             /* 5 清空 perDay 已用项 */
   time.resetClock();                     /* 时间回到 20:00:00 */

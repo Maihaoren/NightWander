@@ -170,7 +170,7 @@ debug 指令当前实际支持（`getAllCommandNames()` 实测返回值）：`['
 ## 4. 关键约定与设计决策
 
 **存档与版本**
-- 存档版本常量 `VERSION` 在 `saveSystem.js`，**当前为 3**；游戏版本号在 `config.GAME_VERSION`，**当前 `v1.9.0a`**；两者独立递增（游戏版本升了但存档结构没变，`VERSION` 就不用动）。v1 / v2 存档不提供迁移，只提示「存档版本过旧，无法加载」。
+- 存档版本常量 `VERSION` 在 `saveSystem.js`，**当前为 4**；游戏版本号在 `config.GAME_VERSION`，**当前 `v1.9.0b1`**；两者独立递增（游戏版本升了但存档结构没变，`VERSION` 就不用动）。v1 / v2 存档不提供迁移，只提示「存档版本过旧，无法加载」。
 - **【用户要求】更新日志必须同步维护**：每次改 `GAME_VERSION`，都要在仓库根目录的 `CHANGELOG.md` 顶部新增一节（格式与分类约定见该文件开头），并按 `git tag -a vX.Y.Z` 打标签。只写已发生的事实，计划留在本文档。
 - 惯例：解析失败一律返回 `null`，由 `main` 打印 `存档无效`；导入前 `window.confirm` 确认，导入后必须「停旧定时器 → 替换 state → 重启定时器 → 重绘全部 UI」。
 
@@ -222,6 +222,13 @@ debug 指令当前实际支持（`getAllCommandNames()` 实测返回值）：`['
 | 16 | 环境：本机 `winget` 完全不可用（任何命令返回 `0x8A150001`），系统 schannel 被环境挡住（`SEC_E_NO_CREDENTIALS`，`curl` 亦不可用），GitHub HTTPS 间歇性失败（DNS 返回污染地址 `198.51.44.8`/`198.51.45.8`） | 已确认（若日后要推远程须注意） | 第二轮实测；本地 Git 不受影响，`git` 已设 `http.sslBackend=openssl` |
 | 17 | **mustResolve 门禁仍可被「系统附加入口」满足**（v1.9.0a 已知限制，未修）：`onOptionClick()` 里 `if (node.mustResolve) game.markMustResolveResolved(node.id);` 对任何选项都生效；`terminal.setLocked()` 只 `disable` 输入框**不禁用按钮行**，`.map-modal` 遮罩又只覆盖地图面板 → 弹窗开着时仍可点按钮行的「掏出怀表看一眼」把门禁满足掉。v1.9.0a 只修了弹窗里的误渲染（`resolveMustResolve()` 过滤 `systemOption`），按用户「仅去除误渲染」要求未动这一处 | **已确认，刻意未修** | v1.9.0a 的 `nw_r16_check.mjs` 实测；候选改法：该行加 `&& !option.systemOption`（一行） |
 | 18 | v1.9.0a 新增的两份文档（日记 / 作者留言）没有独立 CSS 类，外观与物品按钮一致，靠名称区分；若要做视觉区分需动 `style.css` | 已确认，未做 | `renderInventory()` 复用 `itemButton()`；用户本轮建议「标注为『作者留言』」即视为已满足 |
+| 19 | **v1.9.0b1 没有终局**：旧的 `goal2`（旅者之石）随旧地图删除，终点判定一并移除；灯塔在占位的码头区域，等 b4 落地后接回「到达即游戏结束」 | 已确认，按分块计划留给 b4 | `main.js` 的 `travelTo` 里留了注释说明；`map.js` 没有 `lighthouse` 节点 |
+| 20 | **「废弃加油站」是需求边列表里的孤立节点**：改动 4 给的每条边都没有它，照抄会导致永远不可达、也不渲染。v1.9.0b1 按最小改动补了 `apartment → gasstation` 一条边 | 已确认的刻意偏离 | `nw_b1_check.mjs` 里有一条断言专门核对「只多出这一条边」 |
+| 21 | **接口白线跟着节点渲染走**：未访问且与当前节点不相邻的接口，白线也一起不画（沿用「不泄露没走过的地图」机制）。所以刚进废城只看得见墙门那 1 根，4 个接口都访问过才是 4 根 | 已确认，未开例外 | `nw_b1_check.mjs` 的改动 6 断言；`renderArea` 里 `if (!states.get(id)) continue` |
+| 22 | **两块区域的节点都没有 `options` / `dark` / `mustResolve`**：需求只要求「节点 + 文案 + 拓扑 + 物品放置」，交互与钥匙逻辑在 c 块。`REQUIRES` 与 `OPTION_HANDLERS` 机制保留但都是空表 | 已确认，按分块计划 | `map.js` 里 `const REQUIRES = {}`；`main.js` 里 `const OPTION_HANDLERS = {}` |
+| 23 | **随机刷物品候选只剩「罐头」1 件**（`events.js` 的 `SUPPLY_ITEMS`）：物品表精简后只剩它可用，且刻意排除怀表（唯一任务物品，`collectedItems` 按 id 记会串）。同一节点已有罐头时刷不出来 | 已确认，等 b2+ 物品表变丰富 | `events.js` 顶部注释写明了理由 |
+| 24 | **25 个节点挤一张 1000×600 画布**：最近的一对（station ↔ subway）间距 106，叠加 ±35 固定噪声后个别节点可能轻微贴边/重叠。本块按需求「沿用现有伪随机偏移机制」放坐标，没改噪声范围 | 已确认，未做 | `nw_b1_check.mjs` 会打印最近的一对及距离并断言 ≥100 |
+| 25 | **`.tools/` 不在版本库里**（gitignore）：回退/切版本时测试脚本不会跟着回退，需要手工对齐；`nw_r8`–`nw_r16` 已在本块作废 | 已确认 | `git ls-files .tools` 为空；作废标记写在各文件头 |
 
 关键报错记录（已确认原因）：
 - `SyntaxError: Identifier 'NODES' has already been declared`（`main.js` 被重复插入 import）→ 已修；症状是浏览器整页无输出。

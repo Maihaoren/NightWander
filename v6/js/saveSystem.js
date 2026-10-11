@@ -1,15 +1,22 @@
 /**
  * saveSystem.js —— 存档序列化 / 反序列化
  * 纯函数：不碰 DOM、不改 state，只做 字符串 <-> 快照对象 的转换与校验。
- * 格式：{ v: 3, data: { ... } } → JSON → Base64
+ * 格式：{ v: 4, data: { ... } } → JSON → Base64
+ *
+ * v4（v1.9.0b1 地图重做第 1 块）：**破坏性变更，v3 及更早的存档一律不兼容**。
+ *   区域表整表换新（home/area1/area2/newarea1/newarea2/darkarea → 7 个新区域 id），
+ *   节点 id 也全换了，旧存档里的 visitedByArea / sheltersByArea / usedOptions
+ *   全是已经不存在的区域与节点键，无法映射，因此**不提供迁移**。
+ *   **字段表本身没有增删**（仍与 REQUIRED 一致）——只换了版本号，
+ *   因为「新地图 id」已经足以让旧档无法对应上。
  *
  * v3（区域重构）：区域从 area1/area2 变成 home/area1/area2，节点 id 全局唯一，
  * 储物键与 mustResolve 键都改用裸 nodeId，并新增 resolvedMustResolve 字段。
- * v1 / v2 存档结构不兼容，不提供迁移，加载时返回 null，
+ * v1 / v2 / v3 存档结构不兼容，不提供迁移，加载时返回 null，
  * 由 main.js 按版本号提示「存档版本过旧，无法加载」。
  */
 
-const VERSION = 3;
+const VERSION = 4;
 
 /** 当前存档版本，供 main.js 区分「版本过旧」与「存档无效」 */
 export const SAVE_VERSION = VERSION;

@@ -36,8 +36,21 @@ const EVENT_NO_CHANGE = '无变化';
 /**
  * 「刷物品」类选项用的候选表。
  * 只挑无槽位／通用的小件，且避开开局储物箱里已经有的东西，免得满地都是大衣牛仔裤。
+ *
+ * v1.9.0b1：原来的 ['compass','pocketwatch','darkshard','oldmap'] 里有 3 件
+ * 已经随物品表精简删掉了（compass / darkshard / oldmap），留着会让随机刷物品
+ * 刷出 ITEMS 里不存在的 id —— spawnItemOnNode 会直接返回 false，
+ * 但事件的 effectText 照样写「获得 1 件物品」，玩家白高兴一场。
+ *
+ * 怀表也**刻意移出候选表**：它是废城「断桥」节点上唯一的任务物品，
+ * 而 collectedItems 是按【物品 id】记的 —— 一旦随机刷出第二块怀表并被捡走，
+ * 断桥那块也会被一起标记成「已拾取」而消失。候选表里不放这种唯一物品。
+ *
+ * 副作用：候选只剩 1 件，所以随机事件刷出来的永远是罐头；
+ * 同一节点上已经有罐头时刷不出来（沿用 spawnItemOnNode 拒绝重复的既有行为）。
+ * 等物品表在 b2+ 变丰富之后再补候选。
  */
-const SUPPLY_ITEMS = ['compass', 'pocketwatch', 'darkshard', 'oldmap'];
+const SUPPLY_ITEMS = ['cannedfood'];
 
 /** 把一件东西放到某个节点的物品池里，并解除「已拾取」标记（否则躺在脚下也捡不起来） */
 function spawnItemOnNode(node, itemId) {
