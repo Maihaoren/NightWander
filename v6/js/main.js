@@ -39,13 +39,11 @@ const THEME_KEY = 'nightwander:theme';
 const RECHARGE_NODE = HOME_ID;
 
 /**
- * 发电厂（v1.9.0b2 改动 3）：在这里过夜不是回满，而是把「上限的 30%」加到当前电量上，
- * 加完 clamp 到上限（setBattery 自己会夹）。
- *   40% 过夜 → 70%；90% 过夜 → 120% 被夹成 100%（b2 的上限还是常量 BATTERY_MAX = 100）。
- * 等 c 块把上限做成可变（电容器），只把 BATTERY_MAX 换成「当前上限」即可。
+ * v1.9.0b2.1 改动 5：发电厂过夜**不再回电**（b2 曾定为「+= 上限 × 30%」，现取消）。
+ * 所以这里不再有 POWERPLANT_ID / POWERPLANT_RECHARGE_RATIO ——
+ * 结算只看「当前节点是不是家」，其余安全屋（含发电厂）一律不回电。
+ * 相关的「在这儿充上电了」文本也一并删掉了。
  */
-const POWERPLANT_ID = 'powerplant';
-const POWERPLANT_RECHARGE_RATIO = 0.30;
 
 let nightEnded = false;      /* 本轮移动/选项期间是否刚好天亮了 */
 let batteryCollapsed = false;/* 本轮移动/选项期间是否触发了「黑暗地点断电回家」 */
@@ -66,6 +64,10 @@ function visitNode(areaId, nodeId) {
   game.setCurrentArea(areaId);
   game.setCurrentNode(nodeId);
   for (const area of areasOfNode(nodeId)) game.markVisited(area, nodeId);
+  /* v1.9.0b2.1：换了节点 = 新的一次到访，把「本次停留已弹过」的守卫清掉，
+     到达时才会重新弹资源交换 / 安全屋弹窗（就地过夜不走这里，所以不会重复弹）。 */
+  promptedExchange.clear();
+  promptedShelter.clear();
 }
 
 /** 视图切换：同时改 state（进存档）与 map（真正重绘），两者不允许各走各的 */
@@ -144,9 +146,9 @@ function itemButton(label, { onClick, disabled, hint } = {}) {
 }
 
 /**
- * 物品栏的一行：物品按钮（占满一行）+ 右侧可选的「丢弃」按钮。
+ * 物品栏的一行：物品按钮（占满一行）+ 右侧可选的若干个小按钮。
  *
- * HTML 结构（onDrop 为空时只返回那一个按钮，与改动前完全一致）：
+ * HTML 结构（没有任何小按钮时只返回那一个物品按钮，与改动前完全一致）：
  *   <div class="inv-item">
  *     <button class="term-button item-button inv-item__main">物品名</button>
  *     <button class="term-button inv-item__drop">丢弃</button>
@@ -154,23 +156,38 @@ function itemButton(label, { onClick, disabled, hint } = {}) {
  *
  * 「丢弃」入口只在野外出现（没有安全屋 = 没有储物箱可以放东西）；
  * 安全屋里走原来的整理模式，物品按钮点击就是放回储物箱。
+ *
+ * v1.9.0b2.1 改动 4：为了让「点怀表看时间」不挤掉它原本的整理动作，
+ * 这里扩成可以挂【多个】小按钮（`extras`）。其它物品仍然只用 onDrop 那一个，
+ * 渲染结果与改动前逐字节一致。
+ *   extras: [{ text, hint, onClick }]
  */
-function carriedItemRow(label, { onClick, disabled, hint, onDrop, dropHint } = {}) {
+function carriedItemRow(label, { onClick, disabled, hint, onDrop, dropHint, extras } = {}) {
   const main = itemButton(label, { onClick, disabled, hint });
-  if (typeof onDrop !== 'function') return main;
+
+  const sides = [];
+  if (typeof onDrop === 'function') {
+    sides.push({ text: UI.dropItem, hint: dropHint, onClick: onDrop });
+  }
+  for (const ex of (extras || [])) {
+    if (ex && typeof ex.onClick === 'function') sides.push(ex);
+  }
+  if (sides.length === 0) return main;
 
   main.classList.add('inv-item__main');
 
-  const drop = document.createElement('button');
-  drop.type = 'button';
-  drop.className = 'term-button inv-item__drop';
-  drop.textContent = UI.dropItem;
-  if (dropHint) drop.title = dropHint;
-  drop.addEventListener('click', onDrop);
-
   const row = document.createElement('div');
   row.className = 'inv-item';
-  row.append(main, drop);
+  row.append(main);
+  for (const s of sides) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'term-button inv-item__drop';
+    btn.textContent = s.text;
+    if (s.hint) btn.title = s.hint;
+    btn.addEventListener('click', s.onClick);
+    row.append(btn);
+  }
   return row;
 }
 
@@ -236,6 +253,21 @@ function renderInventory() {
     const label = `${UI.slotName[slot]}：${item ? item.name : UI.inventory.emptySlot}`;
 
     if (slot === 'hand') {
+      /* v1.9.0b2.1 改动 4：手持槽里的怀表 —— 点它看时间，右侧给「收回口袋」（野外还有「丢弃」）。
+         其它物品行为完全不变。 */
+      if (isPocketwatch(item)) {
+        return carriedItemRow(label, {
+          onClick: () => watchTimeAtInventory(),
+          hint: '点击看当前时间；右侧按钮把它收回口袋',
+          onDrop: (atHome && item) ? null : (item ? () => dropItemToNode(item) : null),
+          dropHint: item ? UI.dropHint(item.name) : '',
+          extras: item ? [{
+            text: '收回口袋',
+            hint: `把${item.name}收回口袋`,
+            onClick: () => handToPocket(),
+          }] : [],
+        });
+      }
       return carriedItemRow(label, {
         onClick: () => handToPocket(),
         disabled: !item,
@@ -280,6 +312,19 @@ function renderInventory() {
     const storageRows = storage.map((item) => {
       const plan = inventory.planTakeFromStorage(item, equipped, pocket);
       const suffix = plan.mode === 'equip' ? '（可装备）' : (plan.mode === 'hand' ? '（可拿在手里）' : '');
+      /* v1.9.0b2.1 改动 4：储物箱里的怀表 —— 点它看时间，右侧给「取出」。
+         取不出来时（口袋满）不再预先置灰，交给 takeFromStorage 自己提示原因。 */
+      if (isPocketwatch(item)) {
+        return carriedItemRow(`${item.name}${suffix}`, {
+          onClick: () => watchTimeAtInventory(),
+          hint: '点击看当前时间；右侧按钮把它取出来',
+          extras: [{
+            text: '取出',
+            hint: `把${item.name}从储物箱里拿出来`,
+            onClick: () => takeFromStorage(item),
+          }],
+        });
+      }
       return itemButton(`${item.name}${suffix}`, {
         onClick: () => takeFromStorage(item),
         disabled: Boolean(plan.reason),
@@ -308,10 +353,19 @@ function renderInventory() {
   /* 口袋：每件 —— 安全屋点一下放回储物箱（整理模式，行为不变）；
      野外点一下是收进手持槽（原行为），右侧额外给一个「丢弃」入口 */
   el.appendChild(section(UI.inventory.pocket, pocket.map((item) => carriedItemRow(item.name, {
-    onClick: atHome ? () => pocketToStorage(item) : () => onPocketClickAway(item),
-    hint: item.slot ? `${UI.slotName[item.slot]}槽物品` : '',
+    onClick: isPocketwatch(item)
+      ? () => watchTimeAtInventory()
+      : (atHome ? () => pocketToStorage(item) : () => onPocketClickAway(item)),
+    hint: isPocketwatch(item)
+      ? '点击看当前时间'
+      : (item.slot ? `${UI.slotName[item.slot]}槽物品` : ''),
     onDrop: atHome ? null : () => dropItemToNode(item),
     dropHint: UI.dropHint(item.name),
+    extras: isPocketwatch(item)
+      ? [atHome
+        ? { text: '放回储物箱', hint: `把${item.name}放回储物箱`, onClick: () => pocketToStorage(item) }
+        : { text: '拿在手里', hint: `把${item.name}拿到手上`, onClick: () => pocketToHand(item) }]
+      : [],
   }))));
 }
 
@@ -450,25 +504,44 @@ function hasItem(id) {
  *
  * v1.9.0b1：旧的「n2 街角老钟」分支随 n2 节点一起删掉了；
  * 终点判定（原 GOAL2_ID）也一并移除，等 b4 用灯塔重做。
+ * v1.9.0b2.1 改动 4：**怀表不再是一个选项**（它在任何弹窗 / 选项区里都不再出现），
+ *   改用「点物品栏里的怀表看时间」—— 见 watchTimeAtInventory()。所以这里只剩「家里的老钟」。
  */
 function ensureTimeOption(node) {
   if (node.id === HOME_ID) return { text: '看一眼墙上的老钟', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'home', systemOption: true };
-  if (hasItem('pocketwatch')) return { text: '掏出怀表看一眼', repeatable: true, timeCost: 0, batteryCost: 0, timeKind: 'watch', systemOption: true };
   return null;
 }
 
 const TIME_TEXTS = {
   home: (t2) => `家里的老钟显示 ${t2}`,
-  watch: (t2) => `怀表显示：${t2}`,
 };
 
-/** 看时间：电量归零时三个来源统一输出同一句 */
+/** 看时间（只剩「家里的老钟」一个来源）：电量归零时统一输出同一句 */
 function lookAtTime(kind) {
   if (game.getBattery() <= 0) {
     terminal.log('钟面/表盘一片漆黑，什么也看不清。');
     return;
   }
-  terminal.log(TIME_TEXTS[kind || 'watch'](time.getTimeString()));
+  terminal.log(TIME_TEXTS[kind || 'home'](time.getTimeString()));
+}
+
+/* ---------------- 怀表（v1.9.0b2.1 改动 4） ----------------
+   怀表的使用方式从「选项」改成「点物品栏里的那一格」：
+     - 不消耗时间 / 体力 / 电量（纯读取）
+     - 电量归零时时间本身是 ??:??:??，这时不打时间，改说「看不清了」
+   这是「物品使用」的雏形，c 块会把使用逻辑统一整理；本块只做怀表这一件。 */
+function isPocketwatch(item) {
+  return Boolean(item) && item.id === 'pocketwatch';
+}
+
+/** 点物品栏 / 手持槽里的怀表：终端输出当前时间 */
+function watchTimeAtInventory() {
+  if (game.isGameOver()) return;
+  if (game.getBattery() <= 0) {
+    terminal.log(UI.watchDark);                       /* 没电：时间显示不出来 */
+    return;
+  }
+  terminal.log(UI.watchTime(time.getTimeString()));
 }
 
 function defaultHandler(option) {
@@ -494,13 +567,10 @@ const OPTION_HANDLERS = {};
 /* ===============================================================
    地点资源交换（v1.9.0b2 改动 2）
    ---------------------------------------------------------------
-   给「没有物品奖励」的地点补的交互：点地点选项 → 弹窗（形式与随机事件弹窗一致）
-   → 「执行」才真正结算，「算了」什么都不做、选项也不算用掉。
-   分配表在 map.js 的 EXCHANGE_BY_NODE；文案在 texts.js 的 EXCHANGES。
-   这里只放【数值效果】：正数表示那一项增加。
-     seconds —— 先推进的游戏内秒数（只有 时间↔资源 这一档才有）
-     stamina / battery —— 体力 / 电量增减
-     spawn   —— 执行后在当前节点刷出来的物品 id（走既有拾取弹窗）
+   给「没有物品奖励」的地点补的交互。
+   v1.9.0b2.1 起改成【到达地点自动弹窗】：不再是一个可点的选项，
+   玩家一到达就弹，必须选了才能继续；「执行」才结算并消耗，「算了」保留（离开再回来还会弹）。
+     seconds / stamina / battery / spawn 的含义同前。
    =============================================================== */
 const EXCHANGE_EFFECTS = {
   /* 时间 ↔ 资源 */
@@ -514,6 +584,7 @@ const EXCHANGE_EFFECTS = {
   x_e2s: { battery: -5, stamina: +1 },
   x_s2e: { stamina: -1, battery: +8 },
   x_e2i: { battery: -3, spawn: 'cannedfood' },
+  x_s2i: { stamina: -1, spawn: 'cannedfood' },
 };
 
 /** 把一件东西放进当前节点的物品池，并解除「已拾取」标记（否则躺在脚下也捡不起来） */
@@ -526,33 +597,64 @@ function spawnItemOnNode(node, itemId) {
 }
 
 /**
- * 资源交换的选项 handler（kind === 'exchange'）。
+ * 【到达自动弹窗】的「本次停留已弹过」守卫（v1.9.0b2.1）。
  *
- * 【once 语义】点这个选项只是「打开弹窗」，所以 onOptionClick 不为它打「已用过」标记；
- *   只有玩家在弹窗里选了「执行」，这里才 markOptionUsed → 用完按钮就消失。
- *   选「算了」不打标，选项保留、下次还能点。
- *
- * 【不触发随机事件】选项自身的 timeCost 是 0，所以 onOptionClick 末尾那条
- *   「耗时后掷一次」不会执行；时间推进发生在「执行」之后的 effect 里。
- *
- * 【顺序】按需求：先关弹窗，再执行 effect，再往终端输出描述性文本。
+ * 两个集合分别记「本次停留里已经弹过资源交换 / 安全屋弹窗的节点 id」。
+ * 清空点是 visitNode() —— 也就是「玩家真的换了节点」这一个入口：
+ *   - 移动 / 强制回家 / debug 传送：都会先 visitNode → 清空 → 到达时重新弹 ✓
+ *   - 就地过夜（overnightAtShelter 不经过 visitNode）→ 不清空 → 不会再弹一次 ✓
+ * 正好对上需求「到达安全屋只弹一次；离开再回来 → 再弹」与
+ * 「『算了』后保留，但不在同一次停留中反复弹」。
  */
-async function exchangeAtNode(option, node) {
+const promptedExchange = new Set();
+const promptedShelter = new Set();
+
+/**
+ * 找到某个节点上那个 arrivalOnly 的交换选项（它不渲染，只用于取到稳定的 fullIndex）。
+ *
+ * 优先从**已构建的选项表**里取（arriveAt 第 2 步 setOptions(buildOptions(node)) 已经建好）：
+ * buildOptions 会给每个选项盖上 fullIndex，而 map.js 里的原始选项对象没有这个字段。
+ * 拿原始对象会在 markOptionUsed 时写进一个 undefined —— 同一次会话里「已用过」看着正常，
+ * 但存档里会存成 null，读档后判定失效、同一个交换能再做一次。所以这里必须先查已构建表。
+ */
+function exchangeOptionOf(node) {
+  const built = game.getOptions().find((o) => o.kind === 'exchange' && o.arrivalOnly);
+  if (built) return built;
+  return (node.options || []).find((o) => o.kind === 'exchange' && o.arrivalOnly) || null;
+}
+
+/**
+ * 【改动 2】到达地点时的资源交换弹窗（由 arriveAt 在 mustResolve 之后调用）。
+ *
+ * - 已经有交换且没被用过、且本次停留还没弹过 → 弹窗
+ * - 弹窗无关闭按钮、必选一项；期间时间暂停（withTimePaused）
+ * - 「exec」→ 关窗后执行 effect、打「已用过」标记、终端输出叙事
+ * - 「cancel」→ 关窗，什么都不做（选项保留，离开再回来还会弹）
+ * - 这就是「物品/资源的使用」入口，和随机事件池完全无关：不掷骰、不进池
+ */
+async function resolveExchange(node) {
+  if (!node || game.isGameOver()) return;
+  const option = exchangeOptionOf(node);
+  if (!option) return;
+  if (game.getUsedOptions(node.id).has(option.fullIndex)) return;   /* 已经执行过（fullIndex 由 buildOptions 盖上） */
+  if (promptedExchange.has(node.id)) return;                        /* 本次停留已经弹过 */
+
   const ex = EXCHANGES[option.exchange];
   const fx = EXCHANGE_EFFECTS[option.exchange];
   if (!ex || !fx) return;
 
-  /* 弹窗期间暂停时间（与 mustResolve / 拾取 / 事件弹窗同一套 withTimePaused） */
+  promptedExchange.add(node.id);
+
   const picked = await withTimePaused(() => modal.showModal({
-    title: UI.exchangeTitle,
+    title: '',                                   /* 改动 7：标题留空，不出现「资源交换」字样 */
     desc: ex.desc,
-    items: [{ id: 'exec', text: UI.exchangeExec }, { id: 'cancel', text: UI.exchangeCancel }],
-    actions: [],                                    /* 没有底部按钮：必须从两项里选一个 */
+    items: [{ id: 'exec', text: ex.exec }, { id: 'cancel', text: ex.cancel }],
+    actions: [],                                 /* 没有底部按钮：必须从两项里选一个 */
   }));
 
-  if (!picked || picked.type !== 'item' || picked.id !== 'exec') return;   /* 算了 / 被关掉 */
+  if (!picked || picked.type !== 'item' || picked.id !== 'exec') return;   /* 选「算了」/ 被外部关掉 */
 
-  /* 「执行」才算用掉这个选项 */
+  /* 「执行」才算用掉：写进既有的 usedOptions（所以存档格式不用改） */
   game.markOptionUsed(node.id, option.fullIndex);
 
   if (fx.seconds) time.advanceTime(fx.seconds);
@@ -562,15 +664,62 @@ async function exchangeAtNode(option, node) {
 
   terminal.log(ex.narrate);
 
-  /* 刷出物品时走 v1.8.3 原有的拾取弹窗，不新造流程（与事件刷物品一致） */
+  renderStatusBar();
+  renderInventory();
+  refreshButtons();
+
+  /* 刷出物品时走既有拾取弹窗，不新造流程（与事件刷物品一致） */
   if (fx.spawn) await pickUpItems(node);
 }
 
-/* 按 option.kind 挂 handler：安全屋选项是运行时生成的，用序号会随插队错位 */
+/**
+ * 【改动 6】到达安全屋时的自动弹窗：4 个按钮，必须选一个才能继续。
+ *   过夜 → 走既有结算流程（settleNight），**不重跑 arriveAt**（否则会再弹一次）
+ *   导出 / 导入存档 → 走既有的导出导入流程（它们自己会再开一个弹窗，串行不叠加）
+ *   稍作停留 → 关窗，什么都不做
+ * 与资源交换的优先级：arriveAt 里先调 resolveExchange、再调本函数 ✓
+ */
+async function resolveShelter(node) {
+  if (!node || game.isGameOver()) return;
+  if (!isShelter(node.id)) return;
+  if (promptedShelter.has(node.id)) return;         /* 本次停留已经弹过 */
+
+  promptedShelter.add(node.id);
+
+  const picked = await withTimePaused(() => modal.showModal({
+    title: UI.shelterPromptTitle,
+    desc: UI.shelterPromptDesc,
+    items: [
+      { id: 'overnight', text: UI.shelter.overnight },
+      { id: 'export', text: UI.exportSave },
+      { id: 'import', text: UI.importSave },
+      { id: 'stay', text: UI.shelter.stay },
+    ],
+    actions: [],
+  }));
+
+  if (!picked || picked.type !== 'item') return;
+
+  if (picked.id === 'overnight') {
+    /* 就地结算：与「过夜」选项同一套流程，但不再重新走到达流程（避免再次弹窗） */
+    settleNight();
+    renderStatusBar();
+    renderInventory();
+    refreshButtons();
+    terminal.log(UI.shelter.overnightDone);
+    return;
+  }
+  if (picked.id === 'export') { await exportSave(); return; }
+  if (picked.id === 'import') { await importSave(); return; }
+  /* stay：什么都不做 */
+}
+
+/* 按 option.kind 挂 handler：安全屋选项是运行时生成的，用序号会随插队错位。
+   v1.9.0b2.1：exchange 不再是「可点的选项」（改成到达自动弹窗，见 resolveExchange），
+   所以这里不再有 exchange 这一项。 */
 const KIND_HANDLERS = {
   overnight: overnightAtShelter,
   stay: stayAtShelter,
-  exchange: exchangeAtNode,
 };
 
 function buildOptions(node) {
@@ -591,9 +740,12 @@ function buildOptions(node) {
 }
 
 /** 所有选项照常参与渲染：requires 不满足的只是标灰（terminal 按 requirementMet 决定），
-    已用选项的判定统一用 option.fullIndex（与过滤无关的稳定编号） */
+    已用选项的判定统一用 option.fullIndex（与过滤无关的稳定编号）。
+    v1.9.0b2.1：arrivalOnly 的「资源交换」占位选项被排除在外 ——
+    它不显示在按钮行 / 选项行 / mustResolve 弹窗里，只由到达时的 resolveExchange 处理；
+    但它仍然留在 game.getOptions() 里，所以 fullIndex 稳定、「已用过」照样落在 usedOptions 里。 */
 function availableOptions() {
-  return game.getOptions().map((option) => ({
+  return game.getOptions().filter((option) => !option.arrivalOnly).map((option) => ({
     ...option,
     requiresHint: option.requiresHint || UI.optionNoRequirement,
     requirementMet: !option.requires || option.requires(game.state),
@@ -717,6 +869,15 @@ async function arriveAt(node) {
   terminal.focusInput();
 
   await resolveMustResolve(node);                    /* 7 到达流程结束后再弹 mustResolve 模态 */
+
+  /* 8 【改动 2】到达带有资源交换的地点 → 自动弹窗（必选一项才能继续）。
+        顺序说明：拾取弹窗(4) → 选项行(5) → mustResolve(7) → 资源交换(8) → 安全屋(9)，
+        全部是 await 串行，不会两个弹窗叠在一起。 */
+  await resolveExchange(node);
+
+  /* 9 【改动 6】到达安全屋 → 再弹一个 4 选 1 的安全屋弹窗。
+        排在资源交换之后（需求：先资源交换、再安全屋）。 */
+  await resolveShelter(node);
 }
 
 /**
@@ -808,14 +969,9 @@ async function switchArea(areaId) {
 
 /** 安全屋过夜：走与回家同一套结算流程，之后重新打印一次到达 */
 async function overnightAtShelter() {
-  const here = game.getCurrentNode();
   settleNight();
   const node = getNode(game.getCurrentArea(), game.getCurrentNode());
   if (node) await arriveAt(node);
-  /* 发电厂专属那句要放在 arriveAt 【之后】：arriveAt 开头会 terminal.clearQueue()，
-     排在它前面会被连排队一起清掉，玩家根本看不到。
-     数值规则在 settleNight，这里只是氛围 + 说明「在这儿充上电了」。 */
-  if (here === POWERPLANT_ID) terminal.log(UI.powerplantOvernight);
 }
 
 function stayAtShelter() {
@@ -1158,11 +1314,9 @@ async function onOptionClick(index) {
 
   terminal.log(UI.echo(option.text));                                      /* 回看：> 选项文本 */
   /* 3 打「已用过」标记。
-     v1.9.0b2：资源交换选项例外 —— 点它只是打开弹窗，只有玩家选了「执行」才算用掉
-     （选「算了」要保留），所以交给 exchangeAtNode 在确认执行后自己打标。 */
-  if (option.kind !== 'exchange') {
-    game.markOptionUsed(node.id, option.fullIndex, option.perDay === true);
-  }
+     v1.9.0b2.1：资源交换不再是可点的选项（它 arrivalOnly、不渲染），
+     所以这里不用再给它开例外 —— 走到这一行的选项都是真选项，一律照打。 */
+  game.markOptionUsed(node.id, option.fullIndex, option.perDay === true);
   game.markGroupUsed(node.id, option.group);
 
   /* mustResolve：做出任意一次选择即视为解除 */
@@ -1377,28 +1531,22 @@ function onBatteryCollapse() {
 /**
  * 结算流程：主动过夜 / 06:00 天亮 / 黑暗断电 / 体力归零 共用。
  * 这是修改 state.day 的唯一游戏逻辑位置（main.js / settleNight）。
- * 不论从哪条路径进来，回电规则都只看【结算时的当前节点】：
- *   === RECHARGE_NODE（家）    → 电量回满
- *   === POWERPLANT_ID（发电厂）→ 电量 += 上限 × 30%（v1.9.0b2 改动 3，加完 clamp）
- *   其余安全屋（墙门 / 北关 / 东关 / 南关 / 码头关）→ 不回电
+ *
+ * 回电规则（只看【结算时的当前节点】）：
+ *   === RECHARGE_NODE（家）→ 电量回满
+ *   其余安全屋（墙门 / 北关 / 东关 / 南关 / 发电厂 / 码头关）→ **不回电**
+ * v1.9.0b2.1 改动 5：发电厂那条「+= 上限 × 30%」已取消，所以这里只剩「家」一个分支。
  * 所以「先传送 → 后结算」定下来之后，各条路径的回电行为自然一致。
  */
 function settleNight() {
   game.setDay(game.getDay() + 1);        /* 1 */
   /* 1.5 跨天一次性扣电：必须在「回电」之前，
-         这样在家过夜才是满电开局，在别的安全屋过夜才会真扣掉这 5%
-         （发电厂也一样先扣 5% 再加 30%，顺序按现有结算流程，本块不改电量流逝逻辑） */
+         这样在家过夜才是满电开局，在别的安全屋过夜才会真扣掉这 5% */
   time.drainBatteryOnDayChange();
   game.setElapsedSeconds(0);             /* 2 */
   game.setStamina(game.getStaminaMax()); /* 3 */
-  /* 4 回电：按节点判断，与区域无关。
-       家在「废城」，发电厂在「工业区」；两者都不是按区域写死的。 */
-  const hereNode = game.getCurrentNode();
-  if (hereNode === RECHARGE_NODE) {
-    game.setBattery(BATTERY_MAX);
-  } else if (hereNode === POWERPLANT_ID) {
-    game.setBattery(game.getBattery() + BATTERY_MAX * POWERPLANT_RECHARGE_RATIO);
-  }
+  /* 4 回电：只有家。按节点判断，与区域无关（家在「废城」）。 */
+  if (game.getCurrentNode() === RECHARGE_NODE) game.setBattery(BATTERY_MAX);
   game.clearPerDayOptions();             /* 5 清空 perDay 已用项 */
   time.resetClock();                     /* 时间回到 20:00:00 */
   time.startClock(onNightEnd);           /* 夜晚结束时时钟被停过，这里重新驱动 */

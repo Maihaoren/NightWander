@@ -153,41 +153,77 @@ export const NODES = {
 };
 
 /* ===============================================================
-   1.5 地点资源交换的分配（v1.9.0b2 改动 2）
+   1.5 地点资源交换的分配（v1.9.0b2 新增；v1.9.0b2.1 补齐废城 + 改成到达自动弹）
    ---------------------------------------------------------------
-   只发给「没有物品奖励」的地点。比例：2/5 时间↔资源、1/5 资源↔资源、2/5 无交互。
-   b2 的两个新区域里，「专属节点中没有物品」的一共 14 个：
-     2/5 × 14 = 5.6 → 6   （时间 ↔ 资源）
-     1/5 × 14 = 2.8 → 3   （资源 ↔ 资源）
-     2/5 × 14 = 5.6 → 5   （无交互）
-   6 + 3 + 5 = 14，差的 2 个按需求「允许 ±1 浮动」补到了时间侧与资源侧。
-   挂上去的选项：once（用过消失）；kind='exchange' 让 main.js 走弹窗流程，
-   option.exchange 是 EXCHANGES / main.js 的 EXCHANGE_EFFECTS 的键。
+   分配口径：对【所有没有物品奖励的地点和安全屋】按比例给
+     2/5 时间 ↔ 资源、1/5 资源 ↔ 资源、2/5 无交互（允许 ±1 浮动把整数凑好看）。
+
+   废城（v1.9.0b2.1 改动 1 新补）：24 个节点里只有「断桥」有怀表，其余 23 个都算：
+     2/5 × 23 = 9.2 →  9  （时间 ↔ 资源）
+     1/5 × 23 = 4.6 →  5  （资源 ↔ 资源）
+     2/5 × 23 = 9.2 →  9  （无交互）
+   工业区（11 个无物品）与东海岸（7 个无物品）b2 已经按规则分过，
+   只补上当时漏掉的 4 个共享接口里的两个（保持各区域比例不变）：
+     工业区 11 个 → 目标 4 时间 + 2 资源 + 5 无 → 原 4/1/6，补 1 个资源（南关）
+     东海岸  7 个 → 目标 3 时间 + 1~2 资源 + 2~3 无 → 原 2/2/3，补 1 个时间（东关）
+     发电厂 / 码头关按比例归入「无交互」。
+
+   挂上去的是一个 **arrivalOnly 选项**：它【不显示在地点按钮行 / 选项行 / mustResolve 弹窗】里
+   （见 main.js 的 availableOptions），但保留一个稳定的 fullIndex ——
+   这样「已用过」状态直接落在既有的 usedOptions 里，存档格式一个字都不用改。
+   到达时由 main.js 的 resolveExchange() 自动弹窗，option.exchange 是效果表的键。
    =============================================================== */
 const EXCHANGE_BY_NODE = {
-  /* 时间 ↔ 资源 ×6 */
+  /* ---- 废城：时间 ↔ 资源 ×9 ---- */
+  home: 'x_rest',              /* 家 */
+  plaza: 'x_rest',            /* 废墟广场 */
+  apartment: 'x_nap',         /* 倒塌公寓 */
+  hospital: 'x_scav',         /* 旧医院 */
+  station: 'x_nap',           /* 废车站 */
+  school: 'x_cell',           /* 学校废墟 */
+  library: 'x_scav',          /* 图书馆废墟 */
+  church: 'x_rest',           /* 教堂废墟 */
+  watertower: 'x_power',      /* 水塔 */
+
+  /* ---- 废城：资源 ↔ 资源 ×5 ---- */
+  wallgate: 'x_s2e',          /* 墙门 */
+  subway: 'x_e2s',            /* 地铁口 */
+  park: 'x_e2i',              /* 街心公园 */
+  dump: 'x_s2i',              /* 垃圾场 */
+  mall: 'x_e2i',              /* 商业街废墟 */
+
+  /* ---- 工业区：b2 已分的 5 个 + 本次补的 1 个 ----
+     补的是【发电厂】而不是【南关】：南关同时属于废城，给它挂交换会让废城的
+     「9 时间 / 5 资源 / 9 无交互」变成 10/6/7；发电厂只属于工业区与孤岛，不干扰废城的计数。 */
   boilerroom: 'x_nap',
   oiltank: 'x_rest',
   assembly: 'x_power',
-  breakwater: 'x_ration',
   pipezone: 'x_cell',
-  coastalroad: 'x_scav',
-  /* 资源 ↔ 资源 ×3（工业区「剩下的那个物品候选」materialyard 也在其中） */
   materialyard: 'x_e2s',
+  powerplant: 'x_s2i',        /* 补：发电厂（工业区第 2 个资源 ↔ 资源） */
+
+  /* ---- 东海岸：b2 已分的 4 个 + 本次补的 1 个 ----
+     同理，补的是【码头关】而不是【东关】（东关也属于废城）。 */
+  breakwater: 'x_ration',
+  coastalroad: 'x_scav',
   beach: 'x_s2e',
   observationdeck: 'x_e2i',
+  dockgate: 'x_power',        /* 补：码头关（东海岸第 3 个时间 ↔ 资源） */
 };
 
-/* 把交换入口挂成地点的选项：放在区域表之前，保证 NODES 建好就能用。
-   文案取自 texts.js 的 EXCHANGES.button；数值效果一律不写在这里。 */
+/* 把交换挂成地点的 arrivalOnly 选项：放在区域表之前，保证 NODES 建好就能用。
+   text 只是个内部占位（这个选项永远不会被渲染出来），真正的文案在 EXCHANGES 的 desc/exec/cancel。 */
+const EXCHANGE_OPTION_TEXT = '就地交换';    /* 不显示，只作为选项数据的占位文本 */
+
 for (const [nodeId, exchangeId] of Object.entries(EXCHANGE_BY_NODE)) {
   const node = NODES[nodeId];
   const ex = EXCHANGES[exchangeId];
   if (!node || !ex) continue;
   node.options.push({
-    text: ex.button,
+    text: EXCHANGE_OPTION_TEXT,
     kind: 'exchange',
     exchange: exchangeId,
+    arrivalOnly: true,    /* 不进按钮行 / 选项行 / mustResolve 弹窗，只由「到达」触发 */
     timeCost: 0,          /* 时间代价在 EXCHANGE_EFFECTS 里（这样它不会触发「耗时后掷事件」） */
     batteryCost: 0,
   });

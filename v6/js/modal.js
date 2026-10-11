@@ -69,10 +69,14 @@ export function showModal({ title, desc, items = [], actions = [] } = {}) {
       resolve(result);
     };
 
-    const head = document.createElement('div');
-    head.className = 'map-modal__title';
-    head.textContent = String(title ?? '');
-    box.appendChild(head);
+    /* v1.9.0b2.1 改动 7：标题为空时不再画那一行（资源交换弹窗故意不显示标题，
+       原来会留一条空白标题栏）。传了 title 的弹窗行为完全不变。 */
+    if (title) {
+      const head = document.createElement('div');
+      head.className = 'map-modal__title';
+      head.textContent = String(title);
+      box.appendChild(head);
+    }
 
     if (desc) {
       const text = document.createElement('div');
