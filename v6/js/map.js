@@ -96,7 +96,7 @@ export const NODES = {
   wallgate: defNode('wallgate', 95, 170, []),             /* 共享：巨墙 ↔ 废城，也是巨墙的主安全屋 */
 
   /* ---- 废城 wasteland（24 个 = 家 1 + 普通 19 + 接口 4） ---- */
-  home: defNode('home', 95, 300, []),                     /* 唯一回电点，储物箱里有罐头 / 大衣 / 牛仔裤 + 日记 / 作者留言 */
+  home: defNode('home', 95, 300, []),                     /* 唯一回电点，储物箱里有罐头 / 大衣 / 牛仔裤 + 日记 / README */
 
   /* 四个接口（共享节点）：各自贴着自己那一侧的边框 */
   northgate: defNode('northgate', 850, 50, []),           /* 北 → 荒野（占位，b3 落地） */

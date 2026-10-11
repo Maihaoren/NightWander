@@ -143,19 +143,22 @@ export function planDrop(item, equipped, pocket) {
 /* ---------------- 穿上装备（v1.9.0b2.2 改动 3；v1.9.0b2.3 改动 3 抽出 canEquip） ---------------- */
 
 /**
- * 能不能穿在身上 —— **唯一判据就是「物品自己带 slot」**，与槽位叫什么无关。
+ * 能不能穿在身上 —— **唯一判据 = 物品自带 slot 且这个槽位在 SLOTS 里**。
  *
  * v1.9.0b2.3 改动 3 把这条判断抽成一个函数：以前「能不能装备」是在好几处各写一遍
  * （`item.slot` 真值判断 / `planEquipFromCarried` 里的守卫），只要有一处写成
  * 「只认 torso / legs」这类硬编码，第一个 back 槽物品（电容器）就会被漏掉。
- * 现在物品栏的「装备」按钮、拾取弹窗的「装备 X」、以及 planEquipFromCarried 全走这一条。
+ * 现在物品栏的三个「装备」按钮、拾取弹窗的「装备 X」、以及 planEquipFromCarried 全走这一条。
  *
- * 注意：槽位合法性只由 SLOTS 定义（`['hand','torso','legs','back']`），
- * 容量只统计 POCKET_SLOTS 里装备的 `pockets` 之和 —— 电容器 `pockets: 0`，
- * 所以穿上它不会改变口袋容量（第一件 back 物品也不会挤掉别的槽位）。
+ * v1.9.0b2.4 改动 1：把「槽位名必须在 SLOTS 里」也并进这个判据（原来只写在
+ * planEquipFromCarried 里）。这样「一个 slot 写成 'hat' 的物品」在任何入口都不会
+ * 冒出「装备」按钮，也不会静默地「装备成功」却没人承接。
+ *
+ * 容量口径没变：只统计 POCKET_SLOTS 里装备的 `pockets` 之和 —— 电容器 `pockets: 0`，
+ * 所以穿上它不会改变口袋容量（第一件 back 装备不会挤掉别的槽位）。
  */
 export function canEquip(item) {
-  return Boolean(item && item.slot);
+  return Boolean(item && item.slot && SLOTS.includes(item.slot));
 }
 
 /**
@@ -183,9 +186,11 @@ export function canEquip(item) {
  */
 export function planEquipFromCarried(item, equipped, pocket, from = 'pocket') {
   if (!item) return { reason: '没有这件物品。' };
-  if (!canEquip(item)) return { reason: '这东西穿不上。' };
-  /* 槽位名必须真的在 SLOTS 里 —— 防止物品表里写错槽名时静默「装备成功」却没有槽位承接 */
-  if (!SLOTS.includes(item.slot)) return { reason: '这东西没地方穿戴。' };
+  /* canEquip 已经含「槽位名在 SLOTS 里」这一条（v1.9.0b2.4 改动 1），
+     这里只是把两种情形分成两句不同的提示：没有 slot vs 槽位名写错。 */
+  if (!canEquip(item)) {
+    return { reason: (item.slot ? '这东西没地方穿戴。' : '这东西穿不上。') };
+  }
 
   const current = equipped[item.slot] || null;
   if (!current) return { mode: 'equip', slot: item.slot };

@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b2.3` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b2.4` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `4` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -34,6 +34,69 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.9.0b2.4] — 2026-10-11 —— 拾取弹窗补装备入口（电容器根因收口）+ 作者留言显示名改 README
+
+**回档点 / git 标签**：`v1.9.0b2.4`
+
+> 存档结构版本号**不变（仍是 v4）**、**没有新增字段**。
+> 改动 1 是 b2.3 那条的**收口**：主要入口在 b2.3 已经补上，本块把判据统一成
+> 「slot 必须在 SLOTS 里」并把这套行为固化成验收断言；
+> 改动 2 只动一个显示名。
+
+### 变更
+
+- **改动 1：拾取弹窗的「装备 X」入口收口**（`v6/js/inventory.js`、`v6/js/main.js`、`v6/js/texts.js`）
+  - 现状说明：b2.3 已经落地了这条主路径 —— `inventory.canEquip()`、`main.js` 的 `takeAndEquip()`、
+    `pickUpItems()` 里给可装备物品多列的「装备 X」（`id` 前缀 `equip:`，`modal.js` 不动）、
+    以及 `tryTakeItem()` 的「已被拿走」去重守卫。本块**没有重复实现**，只做了下面两件事。
+  - `canEquip(item)` 的判据补齐：原来是 `Boolean(item && item.slot)`，
+    「槽位名必须在 `SLOTS` 里」那一步只写在 `planEquipFromCarried` 内部 ——
+    现在并进 `canEquip`（`Boolean(item && item.slot && SLOTS.includes(item.slot))`），
+    于是**所有入口**（拾取弹窗的「装备 X」、物品栏的当地物品行 / 口袋行 / 手持槽行、
+    `takeAndEquip`、`planEquipFromCarried`）用的是同一条判断：
+    一个把槽位名写成 `'hat'` 的物品在任何入口都不会冒出「装备」按钮，也不会静默「装备成功」。
+  - `planEquipFromCarried` 的提示分成两种：没有 `slot` →「这东西穿不上。」；
+    槽位名不在 `SLOTS` 里 →「这东西没地方穿戴。」（原来两者混在一句里）。
+  - 验收固化成 `.tools/nw_b24_check.mjs`：电容器 / 大衣 / 牛仔裤 / 任意新槽位物品
+    （测试里临时造的「挎包」`back` + `pockets: 2`）都能从拾取弹窗**一步穿到对应槽位**；
+    `back` 已有装备时弹「换上 / 先不换」替换流程；不可装备的物品（罐头）不会多出条目；
+    过期条目不会重复发一份；穿上电容器前后 `computePocketCapacity` 不变（`pockets: 0`）；
+    野外点背部槽依旧不会脱下（`unequip()` 的 `currentShelterKey()` 判断未动）。
+  - **没做**：电容器 `batteryMaxBonus: 25`（电量上限 +25%）仍只是数据，本块不参与任何计算（留 c 块）。
+- **改动 2：作者留言显示名 → `README`**（`v6/js/texts.js`，另有 3 处注释同步）
+  - `DOCUMENTS` 第二份的 `name`：`'作者留言'` → `'README'`。`id` 本来就是 `'readme'`，没动。
+  - **只动显示名**：储物箱里的位置（排在真物品与日记之后）、点开后的终端输出
+    （仍是 `UI.inspect('README', '一张夹在盒子里的纸。')` + 4 段正文）、
+    「不可拾取 / 不占容量 / 不消耗时间」的既有行为，以及 a 块的怀表看时间入口，全部没变。
+  - **存档不受影响**：两份文档从来就不在 `state` 里（`state.js` 只有一条提到它们的注释），
+    快照与存档字段表里既没有 `diary` / `readme` 也没有显示名 —— 所以既不用迁移，也不用兼容分支。
+    实测存档串里搜 `diary` / `readme` / `日记` / `README` 全部为 false。
+  - 其他出现处的统一：`main.js` 两处注释、`map.js` 一处注释里的「作者留言」改成 README。
+    `CHANGELOG.md` 里 a / b1 的历史条目**保持原样**（那是当时的事实记录，本节的改名事实记在这里）；
+    `HANDOFF.md` 的遗留表更新为「靠名称 `README` 区分」。
+
+### 验证
+
+- 新增临时校验脚本 `.tools/nw_b24_check.mjs`（2 个改动 + a/b1/b1.1/b2/b2.1/b2.2/b2.3 回归，全部通过）。
+- 同步更新了 `.tools/nw_b1_check.mjs` / `nw_b11_check.mjs` / `nw_b2_check.mjs` 里
+  「DOCUMENTS 名称 / 储物箱行名」的断言（`作者留言` → `README`），
+  以及 `nw_b22_check` / `nw_b23_check` 里过时的版本号与 `canEquip` 正则。
+- 走过的全量套件（全部通过）：`nw_b24_check` / `nw_b23_check` / `nw_b22_check` / `nw_b21b_check` /
+  `nw_b2_check` / `nw_b11_check` / `nw_b1_check` / `nw_r13_check` / `nw_r14_check` /
+  `nw_boot_check` / `nw_ver_check`。
+
+### 已知限制 / 遗留
+
+- 拾取弹窗里可装备的物品仍占两行（「电容器」+「装备 电容器」）。这是刻意的：
+  一行是「拿走」，一行是「拿走并穿上」；物品栏那条窄按钮也仍然保留，两条路都通。
+- 电容器装上后没有任何数值效果（上限 +25% 属于 c 块）。
+- 「挎包 / 大背包」这两个物品本身还没进 `ITEMS`（c 块按计划加），
+  本块的验收用一个临时造的 `back` + `pockets: 2` 物品证明了**任意合法槽位**都能走这条入口。
+- 老套件 `nw_r16_check.mjs` 是 a 块时期的临时脚本（里面还写着已删除的手电筒 / 火把 / 古老地图），
+  早已被后续套件取代，本次没有跟着改它的断言。
 
 ---
 
