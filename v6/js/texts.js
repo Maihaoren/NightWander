@@ -43,6 +43,9 @@ export const UI = {
     moved: (from, to) => `${'='.repeat(10)} ${from} -->${to} ${'='.repeat(10)}`,
   timeCost: (sec) => `耗时：${sec}`,
   mapHere: '你在这里',
+  exhausted: '你感到筋疲力尽。',
+  tipDuration: (d) => `预计耗时 ${d}`,
+  tipArrival: (t) => `到达时间 ${t}`,
   /* 大地图区域通道的小标签：把这条通道靠哪些共享节点连起来说清楚 */
   mapRegionLink: (names) => names.join(' ↔ '),
 

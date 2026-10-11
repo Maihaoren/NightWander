@@ -18,6 +18,7 @@
 import { SCENES, UI } from './texts.js';
 import { DEFAULT_TRAVEL_COST, DISTANCE_TO_TIME_RATIO, SECONDARY_ROAD_PENALTY } from './config.js';
 import * as game from './state.js';
+import { formatDuration, formatClock } from './timeSystem.js';
 
 export const VIEW = { w: 1000, h: 600 };
 export const NODE_W = 130;
@@ -592,6 +593,121 @@ export function computeNodeScale(count) {
   return Math.min(NODE_SCALE_MAX, Math.max(NODE_SCALE_MIN, raw));
 }
 
+/* ---------------- 移动耗时（预览与实际共用同一份随机值） ---------------- */
+
+const MOVE_JITTER = 0.1;                 /* 基础耗时上叠加 ±10% 随机 */
+const moveDurationCache = new Map();     /* key = `${区域}|${起点}|${终点}` */
+
+/** 走完一步或换了视图就丢掉缓存，下次悬浮会重新摇一次随机 */
+export function clearMoveDurationCache() {
+  moveDurationCache.clear();
+}
+
+/**
+ * 计算「从 fromId 走到 toId」要花多久。
+ *
+ * @returns {{ seconds:number, base:number, display:string } | null}
+ *   seconds —— 叠加 ±10% 随机后的整数秒（至少 1 秒）
+ *   base    —— 未加随机的路径耗时（沿已探明路径逐跳累加）
+ *   display —— HH:MM:SS
+ *   不可达返回 null
+ *
+ * 同一个 (区域, 起点, 终点) 在缓存有效期内返回**同一个**结果：
+ * 悬浮预览时先算并缓存，点击移动时直接复用，所以预览与实际绝不会各摇一次随机。
+ */
+export function calcMoveDuration(fromId, toId, regionId = null, visited = null) {
+  const area = regionId || game.getCurrentArea();
+  const key = `${area}|${fromId}|${toId}`;
+  if (moveDurationCache.has(key)) return moveDurationCache.get(key);
+
+  const base = computeMoveCost(fromId, toId, area, visited);
+  if (base === null) return null;
+
+  const factor = 1 + (Math.random() * 2 - 1) * MOVE_JITTER;
+  const seconds = Math.max(1, Math.round(base * factor));
+  const result = { seconds, base, display: formatDuration(seconds) };
+
+  moveDurationCache.set(key, result);
+  return result;
+}
+
+/* ---------------- 悬浮提示（预计耗时 + 到达时间） ---------------- */
+
+let tipEl = null;
+let tipFor = null;      /* 当前提示对应的目标节点 id：同一个目标只是跟着鼠标挪位置，不重建内容 */
+
+function tipElement() {
+  if (tipEl && tipEl.parentNode) return tipEl;
+  const host = svgEl && svgEl.parentElement ? svgEl.parentElement : document.body;
+  tipEl = document.createElement('div');
+  tipEl.className = 'map-tip';
+  tipEl.hidden = true;
+  host.appendChild(tipEl);
+  return tipEl;
+}
+
+export function hideTip() {
+  tipFor = null;
+  if (tipEl) tipEl.hidden = true;
+}
+
+/** 把提示摆到鼠标右下角；贴到视口边缘时翻到另一侧，保证整块提示都在屏幕内 */
+function placeTip(el, event) {
+  const pad = 14;
+  let x = (event && event.clientX ? event.clientX : 0) + pad;
+  let y = (event && event.clientY ? event.clientY : 0) + pad;
+
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 0;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 0;
+  const rect = vw && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+  if (rect) {
+    if (x + rect.width > vw - 4) x = Math.max(4, x - rect.width - pad * 2);
+    if (y + rect.height > vh - 4) y = Math.max(4, y - rect.height - pad * 2);
+  }
+
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+}
+
+/**
+ * 悬浮提示的内容：两行，预计耗时 / 到达时间。
+ *   电力耗尽 → 返回 null（提示完全不可用，连耗时也不显示）
+ *   没有当前节点、或目标就是当前节点 → 返回 null
+ *   路径算不出来（不可达）→ 返回 null
+ * 不可点节点根本不会绑悬浮事件，所以走不到这里。
+ */
+function buildTipLines(toId, regionId) {
+  if (game.getBattery() <= 0) return null;
+
+  const from = currentNode;
+  if (!from || from === toId) return null;
+
+  const move = calcMoveDuration(from, toId, regionId);          /* 与点击时同一份缓存值 */
+  if (!move) return null;
+
+  const arrival = formatClock(game.getElapsedSeconds() + move.seconds);
+  return [UI.tipDuration(move.display), UI.tipArrival(arrival)];
+}
+
+function showTip(event, toId, regionId) {
+  const lines = buildTipLines(toId, regionId);
+  if (!lines) { hideTip(); return; }
+
+  const el = tipElement();
+  if (tipFor !== toId) {          /* 目标换了才重建两行文字；同一目标不重建，避免 mousemove 抖动 */
+    tipFor = toId;
+    el.textContent = '';
+    for (const text of lines) {
+      const row = document.createElement('div');
+      row.className = 'map-tip__line';
+      row.textContent = text;
+      el.appendChild(row);
+    }
+  }
+  el.hidden = false;
+  placeTip(el, event);
+}
+
 /* ===============================================================
    4. 渲染（大地图 / 区域地图）
    =============================================================== */
@@ -647,9 +763,14 @@ export function initMap(svg, handlers = {}) {
  * 区域通道：两端区域都可见才画，用粗线（.region-link）。
  */
 function renderWorld() {
+  /* 【机制】电量耗尽时大地图同样收缩：只显示当前区域与它直接相邻的区域块 */
+  const noBattery = game.getBattery() <= 0;
+  const currentArea = game.getCurrentArea();
+  const inSight = (id) => !noBattery || id === currentArea || isAreaNeighbor(currentArea, id);
+
   const visible = new Set();
   for (const id of Object.keys(REGIONS)) {
-    if (isAreaUnlocked(id)) visible.add(id);
+    if (isAreaUnlocked(id) && inSight(id)) visible.add(id);
   }
 
   const drawnLinks = new Set();
@@ -739,11 +860,19 @@ function renderArea(regionId) {
   /* 已访问节点里，只有「沿已探明边（两端都已访问）能走到」的才可点 */
   const reachable = here ? reachableVisited(regionId, here, visited) : new Set(visited);
 
+  /* 【正式机制 A】未访问节点只在与当前节点有直接边时才渲染为菱形，否则完全不渲染。
+     这不是临时行为：它同时满足「看得见路就能走」与「不泄露没走过的地图结构」。
+     玩家每次移动后 currentNode 变化，这一集合会随重新渲染自动重算。 */
+  const noBattery = game.getBattery() <= 0;
+  /* 【机制】电量耗尽时视野再收缩一层：只保留与当前节点有直接边的节点（当前节点自己当然要在） */
+  const inSight = (id) => !noBattery || !here || id === here || hasDirectEdge(regionId, here, id);
+
   /* 四种状态；null = 不渲染 */
   const stateOf = (id) => {
+    if (!inSight(id)) return null;                      /* 没电被隐藏：不可点，也没有悬浮提示 */
     if (here && id === here) return 'current';          /* 当前位置：有标识，不参与可点性判断 */
     if (visited.has(id)) return reachable.has(id) ? 'visited' : 'blocked';
-    /* 未访问：只有与当前节点直接相邻才显示菱形；没有当前节点时退回旧规则 */
+    /* 【正式机制 A】未访问：只有与当前节点直接相邻才显示菱形；没有当前节点时退回旧规则 */
     if (!here) return computeClickable(regionId, visited).has(id) ? 'unseen' : null;
     return hasDirectEdge(regionId, here, id) ? 'unseen' : null;
   };
@@ -823,12 +952,21 @@ function renderArea(regionId) {
 
     layers.nodes.appendChild(group);
     nodeEls.set(id, group);
+
+    /* 悬浮提示只给可点节点（visited / unseen）；blocked 与当前节点都不是可点目标 */
+    if (st === 'visited' || st === 'unseen') {
+      group.addEventListener('mouseenter', (ev) => showTip(ev, id, regionId));
+      group.addEventListener('mousemove', (ev) => showTip(ev, id, regionId));
+      group.addEventListener('mouseleave', hideTip);
+    }
   }
 }
 
 export function setMapView(next) {
   view = next === 'world' ? 'world' : 'area';
+  clearMoveDurationCache();          /* 换了视图 → 预览缓存作废，下次悬浮重新摇随机 */
   if (!svgEl) return view;
+  hideTip();
 
   clearLayers();
   if (view === 'world') renderWorld();

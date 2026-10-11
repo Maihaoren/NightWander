@@ -339,6 +339,24 @@ body {
   pointer-events: none;
 }
 
+/* ---------- 地图上的悬浮提示（预计耗时 / 到达时间） ---------- */
+.map-tip {
+  position: fixed;
+  z-index: 30;
+  pointer-events: none;
+  padding: 3px 7px;
+  border: var(--border-w) solid var(--term-fg);
+  background: var(--term-bg);
+  color: var(--term-fg);
+  font-family: var(--font-ui);
+  font-size: var(--fs-mapnote);
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.map-tip[hidden] { display: none; }
+.map-tip__line + .map-tip__line { margin-top: 2px; }
+
 /* ---------- ascii 画面板 ---------- */
 .scene-art {
   margin: auto;

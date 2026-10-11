@@ -126,12 +126,17 @@ export function getStamina() {
   return state.stamina;
 }
 
+/**
+ * 体力只夹上限，**不夹 0**：内部允许记录负值。
+ * 0 只是「筋疲力尽」的提示点，负值才触发强制回家；UI 显示时取 max(0, 体力)。
+ */
 export function setStamina(value) {
-  state.stamina = Math.max(0, Math.min(state.staminaMax, value));
+  state.stamina = Math.min(state.staminaMax, Number(value) || 0);
 }
 
 export function spendStamina(amount) {
-  setStamina(state.stamina - amount);
+  state.stamina -= (Number(amount) || 0);
+  if (state.stamina > state.staminaMax) state.stamina = state.staminaMax;
 }
 
 export function getStaminaMax() {

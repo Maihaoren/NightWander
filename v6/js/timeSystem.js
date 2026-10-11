@@ -77,15 +77,29 @@ function finish() {
   if (onNightEnd) onNightEnd();
 }
 
-/** "HH:MM:SS"；电量归零时返回 "??:??:??"（时间照常流逝） */
-export function getTimeString() {
-  if (game.getBattery() <= 0) return '??:??:??';
-
-  const totalSec = Math.floor(game.getElapsedSeconds());
-  const totalSecOfDay = (NIGHT_START_HOUR * 3600 + totalSec) % 86400;
+/** 把「已流逝游戏秒」格式化成夜间钟点 HH:MM:SS（20:00 起算） */
+export function formatClock(elapsedSeconds) {
+  const totalSec = Math.floor(Number(elapsedSeconds) || 0);
+  const totalSecOfDay = (((NIGHT_START_HOUR * 3600 + totalSec) % 86400) + 86400) % 86400;
   const hours = Math.floor(totalSecOfDay / 3600);
   const minutes = Math.floor((totalSecOfDay % 3600) / 60);
   const seconds = totalSecOfDay % 60;
 
   return [hours, minutes, seconds].map((n) => String(n).padStart(2, '0')).join(':');
+}
+
+/** 把一段「时长秒数」格式化成 HH:MM:SS —— 是时长不是钟点，超过 24 小时也不进位 */
+export function formatDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+
+  return [hours, minutes, secs].map((n) => String(n).padStart(2, '0')).join(':');
+}
+
+/** "HH:MM:SS"；电量归零时返回 "??:??:??"（时间照常流逝） */
+export function getTimeString() {
+  if (game.getBattery() <= 0) return '??:??:??';
+  return formatClock(game.getElapsedSeconds());
 }

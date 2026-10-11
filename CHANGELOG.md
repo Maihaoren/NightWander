@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.8.6` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.8.7` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `3` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -34,6 +34,106 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.8.7] — 2026-10-11 —— 5 项功能：机制 A 转正、移动耗时抽象、悬浮提示、没电视野收缩、体力 0/负值规则
+
+**回档点**：`v1.8.7`
+
+### 新增
+
+**1. 移动耗时统一成 `HH:MM:SS` + ±10% 随机（`map.js` + `timeSystem.js`）**
+
+- 新函数 `calcMoveDuration(fromId, toId, regionId = null, visited = null)` → `{ seconds, base, display } | null`
+  - `base`：沿已探明路径逐跳累加的基础秒数（`computeMoveCost()` 的结果）
+  - `seconds`：`Math.max(1, Math.round(base × (1 ± 0.1)))`
+  - `display`：`formatDuration(seconds)` → `HH:MM:SS`
+  - **不可达返回 `null`**，调用方必须据此拒绝移动（`null` 不等于 0，不是「免费移动」）
+- 新函数 `clearMoveDurationCache()`：清空 `moveDurationCache`（`Map`，key = `` `${区域}|${起点}|${终点}` ``）
+- **悬浮预览与点击移动共用同一份缓存值**：悬浮时先算并缓存，点击时 `travelTo()` 命中同一个 key，因此**两侧绝不会各摇一次随机**。作废时机：`setMapView()`（`refreshMap()` 内部会调它）与 `travelTo()` 移动生效之后。
+- `timeSystem.js` 新增两个纯格式化函数：
+  - `formatClock(elapsedSeconds)` —— 已流逝秒 → 夜间钟点 `HH:MM:SS`（20:00 起算，含负数取模保护）
+  - `formatDuration(seconds)` —— 时长 → `HH:MM:SS`（**是时长不是钟点**，超过 24 小时不进位）
+  - `getTimeString()` 改为复用 `formatClock()`，对外行为不变（没电仍返回 `??:??:??`）
+
+**2. 悬浮提示：预计耗时 + 到达时间（`map.js` + `texts.js` + `style.css`）**
+
+- 悬浮在**可点节点**（`is-visited` / `is-unseen`）上显示两行小提示：
+  - `预计耗时 HH:MM:SS`（`UI.tipDuration`）
+  - `到达时间 HH:MM:SS`（`UI.tipArrival`，= `formatClock(已流逝秒 + 本次耗时)`）
+- 提示元素 `div.map-tip` 惰性创建，挂在 `<svg id="map">` 的父节点里；`position: fixed` + `pointer-events: none` + `z-index: 30`，贴视口边缘时自动翻到另一侧（`placeTip()`）。
+- **电量归零 → 提示完全不可用**：`buildTipLines()` 第一行就是 `if (game.getBattery() <= 0) return null;`，连耗时都不显示。
+- **不可点节点没有提示**：只有 `stateOf()` 判定为 `visited` / `unseen` 的分组才绑 `mouseenter` / `mousemove` / `mouseleave`；`is-current`（当前所在）与 `is-blocked`（已访问但走不到）都不绑。
+- 同一目标上连续 `mousemove` 只挪位置、不重建两行文字（`tipFor` 记住上一个目标）。
+
+**3. 机制 A 转正（`map.js`）**
+
+- 「未访问节点渲染为菱形」的条件正式定为「**与当前节点有直接边**」——`hasDirectEdge(regionId, here, id)`；不满足则**完全不渲染**。源码注释已标注【正式机制 A】，不再视为临时行为。
+- 理由（已写入注释）：同时满足「看得见路就能走」与「不泄露没走过的地图结构」；每次移动后 `currentNode` 变化，这一集合随重新渲染自动重算。
+- `here` 为空时（尚未确定当前节点）退回旧规则 `computeClickable()`。
+
+**4. 电量耗尽时视野收缩（`map.js`）**
+
+- 区域地图：`inSight(id) = !noBattery || id === here || hasDirectEdge(regionId, here, id)`
+  —— 只保留**当前节点与直接相邻节点**；**已访问但不相邻的节点也一并隐藏**。
+  被隐藏的节点在 `stateOf()` 里直接返回 `null`：**既不可点，也没有悬浮提示**。
+- 大地图：`inSight(id) = !noBattery || id === currentArea || isAreaNeighbor(currentArea, id)`
+  —— 只保留**当前区域与相邻区域**（`isAreaNeighbor` = 声明了 `neighbors` 或共享节点）。
+
+**5. 体力 0 / 负值规则（`state.js` + `main.js`）**
+
+- `state.setStamina()` 改为**只夹上限、不夹 0**：`Math.min(state.staminaMax, Number(value) || 0)`，**内部允许记录负值**。
+- `state.spendStamina()` 改为直接相减 + 只夹上限（不再经由 `setStamina()` 把负值抹成 0）。
+- 状态栏显示 `Math.max(0, game.getStamina())` —— 内部负值不外显。
+- `main.js travelTo()`：
+  - **删除**「体力 < `MOVE_STAMINA_COST` 就拒绝移动」的门槛：**0 体力仍可行动，每次照扣 1 点**。
+  - 扣完**正好为 0** → 打印 `UI.exhausted`（「你感到筋疲力尽。」）**仅此一句提示**，不影响行动。
+  - 移动与到达流程走完后再判断体力 **< 0**：
+    - 目标节点是安全屋（`isShelter(id)`）→ 就地 `settleNight()`，**不惩罚**；
+    - 否则 → `onForceHome('stamina')`（送回本区域 `primaryShelter`，`staminaMax` −1）。
+  - 「强制回家 → 先 `settleNight()` 再判 `gameOver`」的顺序**未变**；`staminaMax` 触底（≤ `STAMINA_MIN`）仍走游戏结束。
+
+### 变更
+
+| 文件 | 改动 |
+|---|---|
+| `v6/js/config.js` | `GAME_VERSION`：`v1.8.6` → `v1.8.7` |
+| `v6/js/map.js` | 新增导出 `calcMoveDuration()` / `clearMoveDurationCache()` / `hideTip()`；新增内部件 `tipElement()` / `placeTip()` / `buildTipLines()` / `showTip()`；`renderArea()` 增加 `inSight` 过滤与悬浮事件绑定；`renderWorld()` 增加 `inSight` 过滤；`setMapView()` 清移动耗时缓存 + 收起提示；**新增对 `timeSystem.js` 的 import**（`formatDuration` / `formatClock`） |
+| `v6/js/main.js` | `travelTo()` 改用 `calcMoveDuration()`，移除 `computeMoveCost()` 调用与体力门槛；`renderStatusBar()` 用 `Math.max(0, …)`；移动横幅打印 `move.display`；import 里去掉已无用的 `computeMoveCost` |
+| `v6/js/state.js` | `setStamina()` / `spendStamina()` 允许负值 |
+| `v6/js/timeSystem.js` | 新增 `formatClock()` / `formatDuration()`；`getTimeString()` 改为复用 `formatClock()` |
+| `v6/js/texts.js` | 新增 `UI.exhausted` / `UI.tipDuration(d)` / `UI.tipArrival(t)` |
+| `v6/style.css` | 新增 `.map-tip` / `.map-tip__line` |
+| `HANDOFF.md` | 游戏版本同步为 `v1.8.7`；顺带修正该文档里「存档 `VERSION` 当前为 2」的过期描述（实际是 3） |
+
+**存档格式**：`VERSION` 仍为 **`3`**，**未变**，旧存档照常加载。
+
+### 验证
+
+- 模块链接检查（10 个模块 OK，`main` 需 DOM）、DOM 桩 `boot()` 无异常、11 个 js 文件 `node --check` 全部通过。
+- 45 项单元断言全部通过（脚本 `.tools/nw_r8_check.mjs`，`gitignore` 内，不入库）：
+  - **机制 A**：站在 `home` 时 area1 只渲染 `home` + 菱形 `n1/n2/n3`；换到 `m1` 后菱形集合随之重算，且全部满足「与当前节点有直接边」。
+  - **耗时**：`display` 匹配 `^\d{2}:\d{2}:\d{2}$`；400 次重摇的 `seconds/base` 落在 `0.900 ~ 1.100`；同一 key 第二次调用返回同一对象；**预览值 === 点击值**；`northgate → home` 绕行 `base = 1500` 秒；路径未探明时返回 `null`。
+  - **提示**：两行文案正则匹配；电量 0 时不显示（`hidden === true`）；只有可点节点绑定了 `mouseenter`。
+  - **没电收缩**：区域地图从 10 个节点缩到 4 个（只剩当前 + 直接相邻）；大地图从 4 个区域缩到 3 个（不相邻的 `area2` 被隐藏）。
+  - **体力**：`0 − 1 = −1` 保留负值；`1 − 1 = 0` 不触发强制回家；上限仍生效；负值分支与「先结算再判 gameOver」的顺序断言通过。
+- **端到端模拟**（脚本 `.tools/nw_e2e2.mjs`，48 项断言，全通过）：在 DOM 桩里真正跑 `boot()`，然后按玩家路径走一遍 ——
+  大地图点 `area1` 切区域 → 悬浮 `n2` 读出「预计耗时 00:08:01 / 到达时间 20:08:01」→ 点击 `n2`，实际推进的秒数**恰好等于**预览那一份（`state.elapsed` 差值 === 预览秒数），横幅打印 `========== 家 -->中央大道 ==========` + 同一串 `耗时：`；
+  体力 1 → 走到 `n5` 后变 0 并打印「你感到筋疲力尽。」、**没有被强制回家**；
+  体力 0 时在 `n2` 走到 `n5`（非安全屋）→ 体力 −1 → **被送回本区域安全屋 `home`、`staminaMax` 10 → 9、不自动结算**；
+  体力 0 时在 `n2` 走进 `home`（安全屋）→ **就地过夜：天数 +1、夜晚时间归零、体力回满、`staminaMax` 不变**；
+  没电时区域地图 10 → 4 个节点、大地图 4 → 3 个区域、悬浮不再出提示。
+  同时回归了既有的 `mustResolve` 规则：`n5` 未做出决定时点击其它节点不移动、不扣体力。
+
+
+### 已知限制 / 遗留
+
+- `UI.noStamina`（「你太累了，无法继续前进。」）在本轮之后**已无调用点**，暂时保留在文案表里未删。
+- 移动耗时目前是**分钟级**（例如 `home → n2` 约 8~9 分钟），与夜间钟点刻度相比跨度偏大，数值手感待后续调整（`config.js` 的 `DISTANCE_TO_TIME_RATIO`）。
+- 寻路仍以**跳数**最短为准，不是耗时最短（沿用 v1.8.5 起的既有行为）。
+- 悬浮提示只绑在**区域地图的节点**上；大地图的区域块没有提示。
+- 浏览器内的实际观感（提示位置、没电时的收缩效果）仍需用户实测；本机没有浏览器自动化。
 
 ---
 

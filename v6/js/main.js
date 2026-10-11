@@ -12,8 +12,8 @@ import { UI, SCENES, ITEMS } from './texts.js';
 import {
   initMap, refreshMap, setMapView, getNode, getNodes, getRegion, getNodeIds,
   isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
-  isSharedNode, primaryShelterOf, getVisitedIn, computeMoveCost,
-  reachableVisited, hasDirectEdge, REGIONS, HOME_ID,
+  isSharedNode, primaryShelterOf, getVisitedIn,
+  reachableVisited, hasDirectEdge, calcMoveDuration, clearMoveDurationCache, REGIONS, HOME_ID,
 } from './map.js';
 import * as terminal from './terminal.js';
 import * as modal from './modal.js';
@@ -104,7 +104,7 @@ function renderStatusBar() {
   if (!day || !stamina || !battery || !clock) return;
 
   day.textContent = UI.status.day(game.getDay());
-  stamina.textContent = UI.status.stamina(game.getStamina(), game.getStaminaMax());
+  stamina.textContent = UI.status.stamina(Math.max(0, game.getStamina()), game.getStaminaMax());
   battery.textContent = UI.status.battery(game.getBattery());
   clock.textContent = UI.status.time(time.getTimeString());
 }
@@ -486,22 +486,20 @@ async function travelTo(id) {
     : hasDirectEdge(area, here, id);
   if (!clickable) return;
 
-  if (game.getStamina() < MOVE_STAMINA_COST) {        /* 1 */
-    terminal.log(UI.noStamina);
-    return;
-  }
-
-  /* 2 两节点间移动耗时：有直接边按那条边算；没有边沿已探明路径逐跳累加；
-       不连通返回 null —— 同样静默拒绝 */
-  const cost = computeMoveCost(here, id, area, visitedIn);
-  if (cost === null) return;
+  /* 2 移动耗时走 calcMoveDuration（沿已探明路径 + ±10% 随机）。
+       悬浮预览时已经算好并缓存过，这里复用同一个值 —— 预览与实际必然一致 */
+  const move = calcMoveDuration(here, id, area, visitedIn);
+  if (!move) return;
+  clearMoveDurationCache();                           /* 用完即作废，免得影响下一步的预览 */
   const firstVisit = !game.isVisited(area, id);
 
-  pendingMove = { fromId: here, toId: id, cost };     /* 供 arriveAt 打印移动横幅 */
+  pendingMove = { fromId: here, toId: id, seconds: move.seconds, display: move.display };
 
   nightEnded = false;
-  game.spendStamina(MOVE_STAMINA_COST);              /* 3 */
-  time.advanceTime(cost);
+  /* 3 扣体力：0 只是「筋疲力尽」的提示点，负值才触发强制回家 */
+  game.spendStamina(MOVE_STAMINA_COST);
+  if (game.getStamina() === 0) terminal.log(UI.exhausted);
+  time.advanceTime(move.seconds);
   if (nightEnded) return;                            /* 途中天亮：已被强制送回安全屋 */
 
   visitNode(area, id);                               /* 4 共享节点会在所属的每个区域里都标记 */
@@ -518,7 +516,11 @@ async function travelTo(id) {
     return;
   }
 
-  if (!isShelter(id) && game.getStamina() <= 0) onForceHome('stamina');
+  /* 6 体力为负：正好在安全屋就地结算（不惩罚），否则强制回家 + 惩罚 */
+  if (game.getStamina() < 0) {
+    if (isShelter(id)) settleNight();
+    else onForceHome('stamina');
+  }
 }
 
 async function arriveAt(node) {
@@ -538,7 +540,7 @@ async function arriveAt(node) {
   if (move && move.toId === node.id) {
     const fromNode = getNode(move.fromId);
     terminal.log(UI.moved(fromNode ? fromNode.name : '？', node.name), 'arrival');
-    terminal.log(UI.timeCost(move.cost));
+    terminal.log(UI.timeCost(move.display));          /* HH:MM:SS */
   } else {
     terminal.log(UI.arrived(node.name), 'arrival');   /* 1 斜体到达文本 */
   }
