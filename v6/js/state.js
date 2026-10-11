@@ -17,7 +17,7 @@ const INITIAL_STORAGE = ['coat', 'jeans', 'flashlight', 'torch', 'oldmap'];
 export const state = {
   day: 1,
   elapsedSeconds: 0,
-  currentArea: 'area1',        /* 当前所在区域；起始区域是 area1 */
+  currentArea: 'home',         /* 当前所在区域：'home' | 'area1' | 'area2'；开局在 home */
   mapView: 'world',            /* 地图视图：'world' 大地图 / 'area' 区域地图 */
   currentNode: null,
   visitedByArea: {},           /* areaId -> Set<nodeId>，各区域的已访问节点分开记 */
@@ -29,7 +29,7 @@ export const state = {
   equipped: { hand: null, torso: null, legs: null, back: null },
   pocket: [],
   collectedItems: new Set(),   /* 已经被捡走过的节点物品 id（保证不会反复捡到同一个） */
-  resolvedMustResolve: new Set(), /* mustResolve 已解除的节点，键为 'areaId:nodeId'（可存档） */
+  resolvedMustResolve: new Set(), /* mustResolve 已解除的节点 id（节点 id 全局唯一，直接用 id 当键；可存档） */
   eventsEnabled: false,        /* 随机事件系统开关（从 localStorage 读，功能待实现） */
   gameOver: false,
   options: [],
@@ -44,9 +44,8 @@ export function initState(homeId) {
   state.eventsEnabled = readEventsEnabled();   /* 首次加载：localStorage → 默认值 */
   state.currentNode = homeId;
   getVisitedByArea(state.currentArea).add(homeId);
-  /* 开局物品放进「起始区域起始安全屋」的储物箱 */
-  const key = makeShelterKey(state.currentArea, homeId);
-  getShelterStorage(key).push(...INITIAL_STORAGE.filter((id) => ITEMS[id]).map((id) => ({ ...ITEMS[id] })));
+  /* 开局物品放进家的储物箱（节点 id 全局唯一，直接用 id 当储物键） */
+  getShelterStorage(homeId).push(...INITIAL_STORAGE.filter((id) => ITEMS[id]).map((id) => ({ ...ITEMS[id] })));
 }
 
 /* ---------------- 区域与地图视图 ---------------- */
@@ -69,18 +68,26 @@ export function setMapView(view) {
   return state.mapView;
 }
 
-/** 安全屋储物箱的键：形如 'area1:home' */
-export function makeShelterKey(areaId, nodeId) {
-  return `${areaId}:${nodeId}`;
-}
+/* 关于储物键：节点 id 已全局唯一（home / lighthouse / n1 …），
+   所以不再需要 'areaId:nodeId' 这种键，直接用节点 id 作键。
+   getShelterStorage(nodeId) / getStorageCapacity(nodeId) 等接口签名不变。 */
 
 /* ---------------- 位置 ---------------- */
+
+/**
+ * 标记某节点在某区域内已访问。
+ * 共享节点（home、lighthouse）需要由调用方对每个所属区域各调一次 —— main.js 负责这件事，
+ * 因为「哪些区域含这个节点」是 map.js 的知识，state.js 不认识区域表。
+ */
+export function markVisited(areaId, nodeId) {
+  getVisitedByArea(areaId).add(nodeId);
+}
 
 /** 移动/传送：同时切换区域与节点，并把该节点标记为该区域的已访问 */
 export function visit(areaId, nodeId) {
   state.currentArea = areaId;
   state.currentNode = nodeId;
-  getVisitedByArea(areaId).add(nodeId);
+  markVisited(areaId, nodeId);
 }
 
 export function setCurrentNode(id) {
@@ -103,14 +110,14 @@ export function isVisited(areaId, nodeId) {
 
 /* ---------------- mustResolve（必须先做出决定的节点） ---------------- */
 
-/* 键格式与安全屋储物箱一致（'areaId:nodeId'），直接复用 makeShelterKey */
+/* 节点 id 全局唯一，直接用它当键，不再需要 'areaId:nodeId' 前缀 */
 
-export function isMustResolveResolved(areaId, nodeId) {
-  return state.resolvedMustResolve.has(makeShelterKey(areaId, nodeId));
+export function isMustResolveResolved(nodeId) {
+  return state.resolvedMustResolve.has(String(nodeId));
 }
 
-export function markMustResolveResolved(areaId, nodeId) {
-  state.resolvedMustResolve.add(makeShelterKey(areaId, nodeId));
+export function markMustResolveResolved(nodeId) {
+  state.resolvedMustResolve.add(String(nodeId));
 }
 
 /* ---------------- 体力 ---------------- */
