@@ -13,7 +13,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.8.3` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.8.4` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `3` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -36,7 +36,91 @@
 
 ---
 
-## [v1.8.3] — 2026-10-10 —— 修 4 个问题：区域块配色、area1 空白、方位统一、物品栏「当地物品」区
+## [v1.8.4] — 2026-10-10 —— 往北扩展两个新区域：北岸 / 北境
+
+**回档点**：`v1.8.4`
+**存档格式**：仍为 **`3`**，**未变更**。`visitedByArea` 是动态结构，多出的两个 key 不影响
+旧存档载入；实测把缺少 `newarea1` / `newarea2` 的 v3 存档导入后，
+这两个 key 会被惰性建出为空集合，不报错。因此**不需要升版本号**。
+
+### 新增
+
+- **两个新区域**
+  - `newarea1`「北岸」：`nodes = ['home', 'na1_main', 'northgate']`
+  - `newarea2`「北境」：`nodes = ['northgate', 'na2_main', 'northpass']`
+- **两个新探索节点**
+  - `na1_main`「北岸滩地」：可拾取物品 **黄铜罗盘**（新物品 `compass`，无 slot，
+    只能进袋或手持）
+  - `na2_main`「北境石林」：一个一次性选项「在石柱上刻下记号」（1800 秒）
+- **两个新关口节点**
+  - `northpass`「北关口」：`area1` 的北出口，也是 `newarea2` 的东出口
+  - `northgate`「北门」：`newarea1` 的东端，也是 `newarea2` 的西端
+- **area1 新增北出口边**：`n7 → northpass`（主路，721 秒）。选 `n7`（岔路口）而不是
+  `lighthouse`，因为 n7 本来就是三岔路口，往北再开一条路最自然
+- **大地图上排新增两个区域块**，方位与需求一致：
+  `newarea1.x = home.x`、`newarea2.x = area1.x`、两块同一行且都在下排之上
+
+### 共享节点总览（本次扩展后）
+
+| 节点 | 出现在哪些区域 |
+|---|---|
+| `home` | `home` / `area1` / **`newarea1`**（三区域共享） |
+| `northpass` | **`area1` / `newarea2`** |
+| `northgate` | **`newarea1` / `newarea2`** |
+| `lighthouse` | `area1` / `area2`（不变） |
+
+### 变更
+
+- `GAME_VERSION`：`v1.8.3` → `v1.8.4`
+- `home.neighbors`：`['area1']` → `['area1', 'newarea1']`
+- `area1.neighbors`：`['home', 'area2']` → `['home', 'area2', 'newarea2']`
+- **`isAreaNeighbor(a, b)` 现在也认「两个区域共享同一个节点」**。
+  原因是 `area1` 与 `newarea1` 共享 `home`：玩家站在 `home` 上本来就该能切过去，
+  但按方位图这一对不画连线。于是把「画线用 `neighbors`」与「点击判定用
+  `neighbors` 或共享节点」分开
+- `REGION_VIEW_POS` 增加 `newarea2` 的覆盖：`northgate`（东端 → 西端）、
+  `northpass`（北出口 → 东端略偏南）。`newarea1` 不需要覆盖
+  （`home(80) < na1_main(330) < northgate(580)` 本来就单调）
+
+### 已知限制 / 遗留
+
+1. **`northpass` 变成了安全屋**。`newarea2` 的三个节点里没有任何安全屋节点，
+   但 `primaryShelter` 必须落在本区域内的节点上（否则强制回家会把玩家送到
+   不属于当前区域的地方，地图会失去高亮、点击也会乱），所以只能把
+   `newarea2.primaryShelter` 设成 `northpass`。而 `isShelter` 的判定是
+   「所有区域 `primaryShelter` 的并集」，于是 `northpass` 自动获得了
+   过夜 / 稍作停留 / 导出 / 导入存档这几个选项。
+   如果不想这样，需要在 `newarea2` 里新增一个专门的安全屋节点，或者改 `isShelter` 的口径。
+2. **两个区域的名称是我取的**（「北岸」「北境」），需求里只给了 id。
+3. **需求写的 `home.y = area1.y` 与现状不符**：现有数据里 `home.y=200`、`area1.y=120`。
+   两者的高度让中心线都落在 `y=300`，所以「下排在同一水平线上」是成立的。
+   本次按「上排整排放在下排之上」实现，**没有移动原有三块中的任何一块**。
+4. **`northpass` / `northgate` 在我给的坐标下靠得很近的两对**：
+   `northpass(660,60)` 与 `n4(450,100)` 的水平间距 210，在 ±35 噪声下最坏会到 140，
+   仍然 ≥ 节点宽 130，实测三个区域的重叠对数都是 0、越界数 0。
+5. 上一版遗留未动：切区域时 `lighthouse` 会在屏幕上跳位；时间只在 `home` 节点暂停；
+   `UI.foundLighthouse` / `notHere` / `crossRegionWalk` / `SAVE_OPTIONS` / `REACH` 无人引用。
+6. **仍未做真实浏览器回归**（本机无可用浏览器自动化）。
+
+### 新增移动耗时（现有规则：距离 × 3.0，主路不打折）
+
+| 边 | 区域 | 耗时 |
+|---|---|---|
+| `home → na1_main` | newarea1 | 750 秒 |
+| `na1_main → northgate` | newarea1 | 750 秒 |
+| `northgate → na2_main` | newarea2 | 690 秒 |
+| `na2_main → northpass` | newarea2 | 1176 秒 |
+| `n7 → northpass` | area1 | 721 秒 |
+
+原有费用未变：`home→n2` 仍 510 秒、`lighthouse→m1` 仍 764 秒。
+
+### 改动规模
+
+2 个文件：`v6/js/map.js`、`v6/js/texts.js`
+（`state.js` 与 `saveSystem.js` 经核对**无需改动**：`getVisitedByArea` 是惰性建键、
+`replaceFromSnapshot` 整块重建、`saveSystem` 只校验 `visitedByArea` 是对象且值为数组）
+
+---## [v1.8.3] — 2026-10-10 —— 修 4 个问题：区域块配色、area1 空白、方位统一、物品栏「当地物品」区
 
 **回档点**：`v1.8.3`（另有 `v1.8.2-fix-124`、`v1.8.2-fix3` 两个中间点）
 **存档格式**：仍为 **`3`**，**未变更**。v1.8.2 的存档可正常导入。

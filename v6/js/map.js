@@ -90,6 +90,12 @@ export const NODES = {
   m2: defNode('m2', 460, 300, []),
   m3: defNode('m3', 300, 120, []),
   goal2: defNode('goal2', 140, 300, []),
+
+  /* 北面两个新区域 */
+  northpass: defNode('northpass', 660, 60, []),   /* area1 的北出口 / newarea2 的东出口（共享） */
+  northgate: defNode('northgate', 580, 300, []),  /* newarea1 的东端 / newarea2 的西端（共享） */
+  na1_main: defNode('na1_main', 330, 300, ['compass']),
+  na2_main: defNode('na2_main', 350, 300, []),
 };
 
 /* ===============================================================
@@ -102,16 +108,48 @@ export const REGIONS = {
     name: '家',
     type: 'region',
     nodes: ['home'],
-    neighbors: ['area1'],
+    neighbors: ['area1', 'newarea1'],
     primaryShelter: 'home',
     unlocked: true,
+  },
+
+  /* 北面新区域一：在家正北。home 是三区域共享节点，所以它的西端就是 home */
+  newarea1: {
+    id: 'newarea1',
+    name: '北岸',
+    type: 'region',
+    nodes: ['home', 'na1_main', 'northgate'],
+    edges: [
+      { from: 'home', to: 'na1_main' },
+      { from: 'na1_main', to: 'northgate' },
+    ],
+    mainRoads: [['home', 'na1_main'], ['na1_main', 'northgate']],
+    neighbors: ['home', 'newarea2'],
+    primaryShelter: 'home',
+    unlocked: true,                     /* home 也属于这一区域，开局就该能看到 */
+  },
+
+  /* 北面新区域二：在 area1 正北。northgate 是它的西端，northpass 是它的东端（南出口） */
+  newarea2: {
+    id: 'newarea2',
+    name: '北境',
+    type: 'region',
+    nodes: ['northgate', 'na2_main', 'northpass'],
+    edges: [
+      { from: 'northgate', to: 'na2_main' },
+      { from: 'na2_main', to: 'northpass' },
+    ],
+    mainRoads: [['northgate', 'na2_main'], ['na2_main', 'northpass']],
+    neighbors: ['newarea1', 'area1'],
+    primaryShelter: 'northpass',        /* 区域内没有安全屋节点，强制回家落到南出口 */
+    unlocked: false,
   },
 
   area1: {
     id: 'area1',
     name: '荒原',
     type: 'region',
-    nodes: ['home', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7', 'lighthouse'],
+    nodes: ['home', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7', 'lighthouse', 'northpass'],
     edges: [
       { from: 'home', to: 'n1' },
       { from: 'home', to: 'n2' },
@@ -123,9 +161,10 @@ export const REGIONS = {
       { from: 'n5', to: 'n7' },
       { from: 'n6', to: 'n7' },
       { from: 'n7', to: 'lighthouse' },
+      { from: 'n7', to: 'northpass' },   /* 北出口：从岔路口往北 */
     ],
-    mainRoads: [['home', 'n2'], ['n2', 'n5'], ['n5', 'n7'], ['n7', 'lighthouse']],
-    neighbors: ['home', 'area2'],
+    mainRoads: [['home', 'n2'], ['n2', 'n5'], ['n5', 'n7'], ['n7', 'lighthouse'], ['n7', 'northpass']],
+    neighbors: ['home', 'area2', 'newarea2'],
     primaryShelter: 'home',
     unlocked: true,
   },
@@ -148,8 +187,18 @@ export const REGIONS = {
   },
 };
 
-/** 区域在大地图上的摆放 */
+/**
+ * 区域在大地图上的摆放。
+ * 上排：北面两个新区域。newarea1 在 home 正北、newarea2 在 area1 正北，
+ *       所以它们的 x 与宽度都跟正下方那一块对齐，竖向连线才是直的。
+ * 下排：原有三块坐标一律未动。
+ * 注：现有数据里 home.y(200) 与 area1.y(120) 本来就不相等，
+ * 但两者的高度让中心线都落在 y=300，所以「下排在同一水平线上」是成立的；
+ * 上排整排压在 y<=110 的空档里，不与下排重叠。
+ */
 const REGION_BOX = {
+  newarea1: { x: 60, y: 10, w: 200, h: 100 },
+  newarea2: { x: 320, y: 10, w: 400, h: 100 },
   home: { x: 60, y: 200, w: 200, h: 200 },
   area1: { x: 320, y: 120, w: 400, h: 360 },
   area2: { x: 780, y: 120, w: 180, h: 360 },
@@ -218,10 +267,18 @@ export function isSharedNode(nodeId, areaA, areaB) {
   return sharedNodes(areaA, areaB).includes(nodeId);
 }
 
-/** b 是否在 a 的 neighbors 里（单向查即可，数据里是双向声明的） */
+/**
+ * a 与 b 是否相邻。
+ * 两种情况都算：
+ *   1) 数据里 a.neighbors 显式声明了 b —— 这一组还会在大地图上画出连线
+ *   2) 两个区域共享同一个节点 —— 玩家就站在那个节点上，本来就该能切过去
+ *      （例如 area1 与 newarea1 共享 home，但按方位图它们之间不画连线）
+ */
 export function isAreaNeighbor(areaA, areaB) {
   const region = getRegion(areaA);
-  return Boolean(region) && (region.neighbors || []).includes(areaB);
+  if (!region) return false;
+  if ((region.neighbors || []).includes(areaB)) return true;
+  return sharedNodes(areaA, areaB).length > 0;
 }
 
 /** 该区域的强制回家送达地 */
@@ -301,6 +358,15 @@ const REGION_VIEW_POS = {
     m2: { x: 460, y: 300 },
     m3: { x: 620, y: 120 },
     goal2: { x: 780, y: 300 },
+  },
+
+  /* newarea2：northgate 在 newarea1 那侧是最东端，到这里要当最西端；
+     northpass 在 area1 那侧是北出口，到这里当东端（略偏南，指向回 area1 的路）。
+     na2_main 只在这一区域出现，逻辑坐标就是视觉坐标，不需要覆盖。
+     newarea1 同理不需要覆盖：home(80) < na1_main(330) < northgate(580) 本来就单调。 */
+  newarea2: {
+    northgate: { x: 80, y: 240 },
+    northpass: { x: 620, y: 360 },
   },
 };
 
