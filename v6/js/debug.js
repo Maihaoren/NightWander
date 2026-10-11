@@ -22,10 +22,9 @@ const HELP = [
   '/staminaMax set {n}  设置体力上限（>=1，并 clamp 体力）',
   '/battery set {n}     设置电量（clamp 到 [0, 100]）',
   '/battery add {n}     电量 +n（clamp）',
-  '/goto {nodeId}       传送到当前区域的指定节点（/goto help 列出所有节点）',
-  '/goto {areaId}:{nodeId}  跨区域传送，例如 /goto area2:m1',
+  '/goto {nodeId}       传送到指定节点（节点 id 全局唯一；/goto help 列出当前区域的节点）',
   '/area list           列出所有区域与解锁状态',
-  '/area goto {areaId}  切换到指定区域（落在该区域入口/主安全屋）',
+  '/area goto {areaId}  切换到指定区域（优先停在与当前区域的共享节点上）',
   '/storage set {n}     设置「当前节点所在储物箱」的容量（>=0）',
   '/storage add {n}     同上，容量 +n',
   '/event {on|off|reset}   —— 开关随机事件系统',
@@ -40,7 +39,7 @@ const USAGE = {
   staminamax: '/staminaMax set {n}（n >= 1）',
   battery: '/battery set {n} 或 /battery add {n}',
   storage: '/storage set {n} 或 /storage add {n}',
-  goto: '/goto {nodeId} 或 /goto {areaId}:{nodeId}（/goto help 列出所有节点）',
+  goto: '/goto {nodeId}（/goto help 列出当前区域的节点）',
   area: '/area list 或 /area goto {areaId}',
   event: '/event {on|off|reset}',   /* 用法提示固定为这一句 */
   version: '/version',
@@ -143,8 +142,8 @@ function execute(input, state, ctx) {
       const bad = needNumber(); if (bad) return bad;
       const n = num();
       if (sub !== 'set' && sub !== 'add') return `参数错误。用法：${usage}`;
-      /* 多区域后储物箱按安全屋隔离，这里作用于「当前所在节点」那个储物箱 */
-      const key = `${state.currentArea}:${state.currentNode}`;
+      /* 储物箱按安全屋隔离；节点 id 全局唯一，直接用节点 id 当键 */
+      const key = String(state.currentNode);
       if (!state.storageCapacityByShelter) state.storageCapacityByShelter = {};
       const before0 = Number.isFinite(state.storageCapacityByShelter[key])
         ? state.storageCapacityByShelter[key] : STORAGE_CAPACITY;
