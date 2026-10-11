@@ -282,14 +282,44 @@ export function getNodeNoise(nodeId) {
   return noise;
 }
 
-/** 节点实际绘制坐标 = 原始坐标 + 噪声，再夹回画布内（否则贴边节点会被 viewBox 裁掉） */
-function drawPos(node) {
+/**
+ * 视觉坐标覆盖表：只影响【绘制】，不影响 computeEdgeCost 用的逻辑坐标（NODES 里的 x/y）。
+ *
+ * 为什么需要它：lighthouse 是共享节点，只有一个逻辑坐标，而它必须同时
+ * 是 area1 的最东端、又是 area2 的最西端 —— 一个 x 做不到。
+ * 所以把「区域内部要显示成西→东」这件事放在视觉层解决，逻辑层一动不动。
+ *
+ * area1 的逻辑坐标本来就是 home < 中间 < lighthouse，无需覆盖，故不列。
+ * area2 的逻辑 x 是 lighthouse(800) → goal2(140)（从东往西），
+ * 这里把它的视觉 x 反过来排，变成 lighthouse(140) → goal2(780)（从西往东）。
+ * y 沿用各节点原有的高度，只调 x 的单调性。
+ */
+const REGION_VIEW_POS = {
+  area2: {
+    lighthouse: { x: 140, y: 300 },
+    m1: { x: 300, y: 120 },
+    m2: { x: 460, y: 300 },
+    m3: { x: 620, y: 120 },
+    goal2: { x: 780, y: 300 },
+  },
+};
+
+/** 节点在指定区域里的视觉基准坐标：有覆盖用覆盖，没有就用逻辑坐标 */
+function viewPos(regionId, node) {
+  const overrides = REGION_VIEW_POS[regionId];
+  const over = overrides && overrides[node.id];
+  return over ? { x: over.x, y: over.y } : { x: node.x, y: node.y };
+}
+
+/** 节点实际绘制坐标 = 该区域的视觉基准坐标 + 固定噪声，再夹回画布内（否则贴边节点会被裁掉） */
+function drawPos(node, regionId) {
   const { dx, dy } = getNodeNoise(node.id);
+  const base = viewPos(regionId, node);
   const halfW = NODE_W / 2;
   const halfH = NODE_H / 2;
   return {
-    x: Math.min(VIEW.w - halfW, Math.max(halfW, node.x + dx)),
-    y: Math.min(VIEW.h - halfH, Math.max(halfH, node.y + dy)),
+    x: Math.min(VIEW.w - halfW, Math.max(halfW, base.x + dx)),
+    y: Math.min(VIEW.h - halfH, Math.max(halfH, base.y + dy)),
   };
 }
 
@@ -490,8 +520,8 @@ function renderArea(regionId) {
     const a = getNode(edge.from);
     const b = getNode(edge.to);
     if (!a || !b) continue;
-    const pa = drawPos(a);
-    const pb = drawPos(b);
+    const pa = drawPos(a, regionId);
+    const pb = drawPos(b, regionId);
     const line = svgNode('line', { class: 'road', x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y });
     layers.roads.appendChild(line);
     edgeEls.push({ from: edge.from, to: edge.to, el: line });
@@ -512,7 +542,7 @@ function renderArea(regionId) {
 
     const group = svgNode('g', { class: classes.join(' '), 'data-id': id });
     const d = NODE_W / 2;
-    const p = drawPos(node);                 /* 绘制坐标 = 原始坐标 + 固定噪声 */
+    const p = drawPos(node, regionId);       /* 绘制坐标 = 该区域的视觉坐标 + 固定噪声 */
 
     group.appendChild(svgNode('rect', {
       class: 'node-rect',
