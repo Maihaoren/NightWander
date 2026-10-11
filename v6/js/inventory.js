@@ -67,6 +67,27 @@ export function planWildPickup(pocket, equipped) {
   return { needDiscard: true };
 }
 
+/* ---------------- 「当地物品」区（节点上的东西，还不属于你） ---------------- */
+
+/**
+ * 当地物品列表：节点上还没被捡走的物品 id。
+ * 纯函数：只做过滤，不碰 state、不碰 DOM。
+ * @param {string[]} nodeItems 节点自带的 items
+ * @param {Set<string>|string[]} collected 已拾取过的物品 id
+ */
+export function listLocalItems(nodeItems, collected) {
+  const got = collected instanceof Set ? collected : new Set(collected || []);
+  return (nodeItems || []).filter((id) => !got.has(id));
+}
+
+/**
+ * 点「当地物品」区里一件时的拾取方案。
+ * 与野外拾取共用同一套优先级：口袋（若空位）→ 手持（若空）→ 都满则要弹替换窗。
+ */
+export function planLocalPickup(pocket, equipped) {
+  return planWildPickup(pocket, equipped);
+}
+
 /** 手持槽 → 口袋（野外与在家都允许） */
 export function planHandToPocket(equipped, pocket) {
   if (!equipped.hand) return { reason: '手持槽是空的。' };

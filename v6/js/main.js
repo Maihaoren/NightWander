@@ -12,7 +12,7 @@ import { UI, SCENES, ITEMS } from './texts.js';
 import {
   initMap, refreshMap, setMapView, getNode, getNodes, getRegion, getNodeIds, computeClickable,
   computeEdgeCost, isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
-  isSharedNode, primaryShelterOf, REGIONS, HOME_ID,
+  isSharedNode, primaryShelterOf, getVisitedIn, REGIONS, HOME_ID,
 } from './map.js';
 import * as terminal from './terminal.js';
 import * as modal from './modal.js';
@@ -173,6 +173,26 @@ function renderInventory() {
     });
   })));
 
+  /* 当地物品：当前节点上还没捡走的东西。
+     逻辑上「还不属于你」，所以放在装备槽下面、你的物品（储物箱 / 口袋）上面；
+     全部捡走后这一区自动消失。它是到达弹窗之外的第二入口 */
+  const here = getNode(game.getCurrentNode());
+  const localItems = here ? getPickableItems(here, game.state.collectedItems) : [];
+  if (localItems.length) {
+    el.appendChild(section(
+      `${UI.inventory.local} ${localItems.length}`,
+      localItems.map((itemId) => {
+        const item = ITEMS[itemId];
+        const plan = inventory.planLocalPickup(pocket, equipped);
+        const suffix = plan.needDiscard ? '（空间不足）' : '';
+        return itemButton(`${item ? item.name : itemId}${suffix}`, {
+          onClick: () => localPickup(itemId),
+          hint: item ? item.desc : '',
+        });
+      }),
+    ));
+  }
+
   /* 储物箱：只在安全屋可见 */
   if (atHome) {
     el.appendChild(section(
@@ -290,6 +310,20 @@ function onPocketClickAway(item) {
   if (game.isGameOver()) return;
   if (game.getEquipped().hand) { inspectItem(item); return; }
   pocketToHand(item);
+}
+
+/**
+ * 点物品栏「当地物品」区里的一件：走与到达弹窗完全相同的拾取逻辑
+ *（口袋 → 手持 → 空间不足时弹替换窗），不消耗时间。
+ */
+async function localPickup(itemId) {
+  if (game.isGameOver()) return;
+  const node = getNode(game.getCurrentNode());
+  const item = ITEMS[itemId];
+  if (!node || !item) return;
+  if (game.state.collectedItems.has(itemId)) return;      /* 已经被拿走了 */
+  await tryTakeItem(node, itemId, item);
+  renderInventory();
 }
 
 /** 当前节点是否处于「必须先做出决定」且尚未解除的状态（mustResolve） */
@@ -424,7 +458,8 @@ async function travelTo(id) {
     terminal.log(UI.farAway);
     return;
   }
-  if (!computeClickable(area, game.getVisitedByArea(area)).has(id)) {
+  /* 共享节点（home / lighthouse）的访问记录可能只落在另一个区域，所以用跨区域的 getVisitedIn */
+  if (!computeClickable(area, getVisitedIn(area)).has(id)) {
     terminal.log(UI.farAway);
     return;
   }
@@ -471,6 +506,7 @@ async function arriveAt(node) {
   terminal.log('');                                  /* 到达后空行 */
   terminal.log(node.desc);                           /* 2 */
   terminal.log(UI.prompt);                           /* 3 */
+  renderInventory();                                 /* 3.5 先让物品栏的「当地物品」区显示出来 */
   await pickUpItems(node);                           /* 4 */
   terminal.log(UI.optionLine(currentButtons()), 'options');   /* 5 选项列表加粗 */
   refreshButtons();                                  /* 6 */
@@ -571,9 +607,9 @@ function stayAtShelter() {
 
 /* ---------------- 野外捡物 ---------------- */
 
-/** 节点上还没被捡走的物品（旧 map.js 的 getPickableItems 在新版里没有了，改由 main 负责） */
+/** 节点上还没被捡走的物品；实现放在 inventory.js 的 listLocalItems，这里保留原调用名 */
 function getPickableItems(node, collected) {
-  return (node.items || []).filter((id) => !collected.has(id));
+  return inventory.listLocalItems(node && node.items, collected);
 }
 
 /**
@@ -600,12 +636,13 @@ async function pickUpItems(node) {
       actions: [
         { text: UI.pickupTakeAll, value: 'takeAll' },
         { text: UI.pickupSkipAll, value: 'skipAll' },
+        { text: UI.pickupLater, value: 'later' },       /* 关掉弹窗，改从物品栏「当地物品」区处理 */
       ],
     });
 
     if (!result) break;                               /* 被外部关掉 */
     if (result.type === 'action') {
-      if (result.value === 'skipAll') break;           /* 全部放弃，物品留在节点 */
+      if (result.value === 'skipAll' || result.value === 'later') break;   /* 物品全部留在节点 */
       takeAsManyAsPossible(node);                     /* 带走拿得下的 */
       changed = true;
       break;

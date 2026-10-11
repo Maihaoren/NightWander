@@ -21,6 +21,7 @@ export const UI = {
     count: (used, total, full) => `${used}/${total}${full ? ' 已满' : ''}`,
     full: '已满',
     slots: '装备槽',
+    local: '当地物品',
     storage: '储物箱',
     pocket: '口袋',
     sources: (list) => list.map((s) => `${s.name} ${s.count}`).join(' / '),
@@ -52,6 +53,7 @@ export const UI = {
   pickupDesc: '地上散着几样东西。要拿哪一件？',
   pickupTakeAll: '带走拿得下的',
   pickupSkipAll: '全部放弃',
+  pickupLater: '稍后处理',
 
   /* mustResolve 弹窗 */
   mustResolveNothing: '这里似乎没什么可做的。',

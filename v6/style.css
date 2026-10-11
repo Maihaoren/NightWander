@@ -246,37 +246,52 @@ body {
 /* ---------- 大地图（区域块 / 区域通道） ---------- */
 .map .region { cursor: pointer; }
 
-.map .region-block {
+/* 区域块默认态：与区域地图的节点用同一套变量 ——
+   浅色 = 黑边框 + 白填充，深色 = 白边框 + 深色填充，两种主题下都可见 */
+.map .region-rect {
   fill: var(--node-fill);
-  stroke: var(--line);
+  stroke: var(--node-stroke);
   stroke-width: 3;
-  stroke-dasharray: 7 5;
   transition: fill 80ms linear, stroke-width 80ms linear;
 }
 
 .map .region-name {
-  fill: var(--node-locked);
+  fill: var(--node-text);
   font-family: var(--font-ui);
   font-size: var(--fs-region);
   letter-spacing: 2px;
   text-anchor: middle;
 }
 
-/* 当前所在区域：实心高亮，与「已访问节点」用同一套黑白配色 */
-.map .region.is-current .region-block {
+.map .region.is-open:hover .region-rect {
+  fill: var(--hover-bg);
+  stroke-width: 5;
+}
+
+/* 当前所在区域：反色填充 + 边框加粗，作为明显标识 */
+.map .region.is-current .region-rect {
   fill: var(--node-visited-fill);
   stroke: var(--node-visited-fill);
-  stroke-width: 5;
-  stroke-dasharray: none;
+  stroke-width: 7;
 }
 
 .map .region.is-current .region-name { fill: var(--node-visited-text); }
 
-/* 非当前区域 hover：只换底色加粗边框，避免和 is-current 的描边宽度打架 */
-.map .region:not(.is-current):hover .region-block {
-  fill: var(--hover-bg);
-  stroke-width: 6;
+/* 已解锁但没访问过 → 菱形，不显示名称（沿用区域地图里未访问节点的规则） */
+.map .region-diamond { display: none; }
+
+.map .region.is-unseen .region-rect,
+.map .region.is-unseen .region-name { display: none; }
+
+.map .region.is-unseen .region-diamond {
+  display: block;
+  fill: var(--unvisited-node-fill);
+  stroke: var(--unvisited-node-border);
+  stroke-width: 2;
+  transition: fill 80ms linear, stroke-width 80ms linear;
 }
+
+.map .region.is-unseen:hover .region-diamond { stroke-width: 3; }
 
 /* 区域之间的通道：比普通道路更粗 */
 .map .region-link {

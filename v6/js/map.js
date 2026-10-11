@@ -311,6 +311,28 @@ export function computeClickable(regionId, visited) {
   return result;
 }
 
+/**
+ * 某节点是否「被访问过」—— 跨区域判定。
+ * home / lighthouse 是共享节点：访问记录可能只落在它所属的另一个区域里
+ *（例如开局站在家里，visitedByArea.home 里有 'home'，但 visitedByArea.area1 里没有）。
+ * 所以判断某一区域的可见性时，不能只看本区域那个 Set。
+ */
+export function isNodeVisited(nodeId) {
+  return areasOfNode(nodeId).some((areaId) => game.getVisitedByArea(areaId).has(nodeId));
+}
+
+/**
+ * 某区域里「算已访问」的节点集合：把共享节点在其他区域的访问状态并进来。
+ * 只读、不改 state —— 不会往 visitedByArea[本区域] 里塞东西，避免污染存档语义。
+ */
+export function getVisitedIn(regionId) {
+  const set = new Set();
+  for (const id of getNodeIds(regionId)) {
+    if (isNodeVisited(id)) set.add(id);
+  }
+  return set;
+}
+
 const edgeCostCache = new Map();
 
 /**
@@ -451,7 +473,9 @@ function renderArea(regionId) {
   const region = getRegion(regionId);
   if (!region) return;
 
-  const visited = game.getVisitedByArea(regionId);
+  /* 遍历的是 region.nodes 全量；访问状态用跨区域的 getVisitedIn，
+     否则站在家里切进 area1 时本区域 Set 是空的，整个地图会什么都不画 */
+  const visited = getVisitedIn(regionId);
   const clickable = computeClickable(regionId, visited);
 
   /* 可见 = 已访问 或 可点击；边只有在两端都可见时才画 */
