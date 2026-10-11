@@ -463,12 +463,17 @@ export function hasDirectEdge(regionId, fromId, toId) {
   );
 }
 
-/** 该区域的无向邻接表 */
-function buildAdjacency(regionId) {
+/**
+ * 该区域的无向邻接表。
+ * 传了 visited 就只保留【两端都已访问（已探明）】的边 —— 玩家只能沿已探明的路走。
+ */
+function buildAdjacency(regionId, visited = null) {
+  const known = visited ? (visited instanceof Set ? visited : new Set(visited)) : null;
   const adj = new Map();
   for (const id of getNodeIds(regionId)) adj.set(id, []);
   for (const edge of getEdges(regionId)) {
     if (!adj.has(edge.from) || !adj.has(edge.to)) continue;
+    if (known && (!known.has(edge.from) || !known.has(edge.to))) continue;
     adj.get(edge.from).push(edge.to);
     adj.get(edge.to).push(edge.from);
   }
@@ -476,13 +481,46 @@ function buildAdjacency(regionId) {
 }
 
 /**
- * BFS 求 from → to 的最短路径（按跳数），返回节点 id 数组（含首尾）；不可达返回 null。
- * 广度优先保证跳数最少；同一层按邻接表顺序走，同一份数据每次结果都一样。
+ * 本区域内「可点的已访问节点集合」。
+ * 从 fromId（当前所在节点）出发，只在【两端都已访问＝已探明】的边构成的子图上做 DFS，
+ * 能走到的已访问节点才算可点。
+ *
+ * 这条规则自然满足跨区域语义：
+ *   - 玩家从哪个共享节点进来，那条边两端都已访问＝已探明，所以能原路退回
+ *   - area1 里只要区域内已探明路径通到 home，home 就可点（不算绕路）
+ *   - newarea2 里 home 虽然在节点列表里，但已探明路径通不过去，于是不可点
+ *
+ * @returns {Set<string>} 可达的已访问节点（不含 fromId 自身）
  */
-export function findShortestPath(regionId, fromId, toId) {
+export function reachableVisited(regionId, fromId, visited) {
+  const known = visited instanceof Set ? visited : new Set(visited || []);
+  const result = new Set();
+  if (!fromId || !known.has(fromId)) return result;
+
+  const adj = buildAdjacency(regionId, known);
+  const seen = new Set([fromId]);
+  const stack = [fromId];                        /* DFS：用什么顺序都行，只求可达集合 */
+
+  while (stack.length) {
+    const cur = stack.pop();
+    for (const next of adj.get(cur) || []) {
+      if (seen.has(next)) continue;
+      seen.add(next);
+      result.add(next);
+      stack.push(next);
+    }
+  }
+  return result;
+}
+
+/**
+ * BFS 求 from → to 的最短路径（按跳数），返回节点 id 数组（含首尾）；不可达返回 null。
+ * 传了 visited 就只走已探明的边。广度优先保证跳数最少；同一层按邻接表顺序走，结果稳定。
+ */
+export function findShortestPath(regionId, fromId, toId, visited = null) {
   if (fromId === toId) return [fromId];
 
-  const adj = buildAdjacency(regionId);
+  const adj = buildAdjacency(regionId, visited);
   if (!adj.has(fromId) || !adj.has(toId)) return null;
 
   const prev = new Map([[fromId, null]]);
@@ -515,19 +553,43 @@ export function findShortestPath(regionId, fromId, toId) {
  *
  * 返回值 null 是一个明确的信号，不是 0：调用方不能把它当成“免费移动”。
  */
-export function computeMoveCost(fromId, toId, regionId) {
+export function computeMoveCost(fromId, toId, regionId, visited = null) {
   const area = regionId || game.getCurrentArea();
   if (!fromId || !toId) return null;
   if (fromId === toId) return 0;
 
+  /* 直接边：可能是通往「未访问菱形」的第一条边，那条边还没探明，所以先放行 */
   if (hasDirectEdge(area, fromId, toId)) return computeEdgeCost(fromId, toId, area);
 
-  const path = findShortestPath(area, fromId, toId);
+  /* 其余一律只沿已探明的边（两端都已访问）走 */
+  const known = visited || getVisitedIn(area);
+  const path = findShortestPath(area, fromId, toId, known);
   if (!path) return null;
 
   let total = 0;
   for (let i = 0; i + 1 < path.length; i += 1) total += computeEdgeCost(path[i], path[i + 1], area);
   return total;
+}
+
+/* ---------------- 节点视觉尺寸自适应缩放 ---------------- */
+
+const NODE_SCALE_REF = 6;      /* 揭示这么多节点时缩放系数正好是 1 */
+const NODE_SCALE_MIN = 0.62;
+const NODE_SCALE_MAX = 1.18;
+
+/**
+ * 节点视觉尺寸的缩放系数。
+ *   揭示得越少 → 节点画得越大；揭示得越多 → 越小。
+ *   取 s = sqrt(NODE_SCALE_REF / count)，于是「节点数 × 单个面积」≈ 常数，
+ *   总占位面积大致不变；再夹到 [MIN, MAX] 免得极端情况过大或过小。
+ *
+ * 只缩放【视觉尺寸】，坐标（方位）一个都不动 —— 方位一致性不受影响。
+ */
+export function computeNodeScale(count) {
+  const n = Number(count);
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  const raw = Math.sqrt(NODE_SCALE_REF / n);
+  return Math.min(NODE_SCALE_MAX, Math.max(NODE_SCALE_MIN, raw));
 }
 
 /* ===============================================================
@@ -672,16 +734,43 @@ function renderArea(regionId) {
   /* 遍历的是 region.nodes 全量；访问状态用跨区域的 getVisitedIn，
      否则站在家里切进 area1 时本区域 Set 是空的，整个地图会什么都不画 */
   const visited = getVisitedIn(regionId);
-  const clickable = computeClickable(regionId, visited);
+  const here = currentNode;
 
-  /* 可见 = 已访问 或 可点击；边只有在两端都可见时才画 */
-  const visible = new Set();
+  /* 已访问节点里，只有「沿已探明边（两端都已访问）能走到」的才可点 */
+  const reachable = here ? reachableVisited(regionId, here, visited) : new Set(visited);
+
+  /* 四种状态；null = 不渲染 */
+  const stateOf = (id) => {
+    if (here && id === here) return 'current';          /* 当前位置：有标识，不参与可点性判断 */
+    if (visited.has(id)) return reachable.has(id) ? 'visited' : 'blocked';
+    /* 未访问：只有与当前节点直接相邻才显示菱形；没有当前节点时退回旧规则 */
+    if (!here) return computeClickable(regionId, visited).has(id) ? 'unseen' : null;
+    return hasDirectEdge(regionId, here, id) ? 'unseen' : null;
+  };
+
+  const states = new Map();
+  let revealed = 0;
   for (const id of region.nodes) {
-    if (visited.has(id) || clickable.has(id)) visible.add(id);
+    const st = stateOf(id);
+    if (st) revealed += 1;
+    states.set(id, st);
   }
 
+  /* 视觉尺寸自适应缩放：只缩放尺寸，坐标（方位）一个都不动 */
+  const scale = computeNodeScale(revealed);
+  const w = NODE_W * scale;
+  const h = NODE_H * scale;
+  const d = w / 2;
+  const nameSize = Math.max(11, Math.round(26 * scale));    /* 文字跟着缩，但有下限保证可读 */
+  const hereSize = Math.max(10, Math.round(11 * scale));
+  if (svgEl && svgEl.style && typeof svgEl.style.setProperty === 'function') {
+    svgEl.style.setProperty('--node-scale', String(scale));
+  }
+
+  /* 边：两端都渲染出来才画 */
   for (const edge of getEdges(regionId)) {
-    if (!visible.has(edge.from) || !visible.has(edge.to)) continue;   /* 任一端不可见 → 不渲染 */
+    if (!states.get(edge.from) || !states.get(edge.to)) continue;
+    if (!states.has(edge.from) || !states.has(edge.to)) continue;
 
     const a = getNode(edge.from);
     const b = getNode(edge.to);
@@ -694,39 +783,42 @@ function renderArea(regionId) {
   }
 
   for (const id of region.nodes) {
+    const st = states.get(id);
+    if (!st) continue;
+
     const node = getNode(id);
     if (!node) continue;
 
-    const seen = visited.has(id);
-    const open = clickable.has(id);
-    if (!seen && !open) continue;            /* 未访问且不可点：完全不渲染 */
-
     const classes = ['node'];
-    if (seen) classes.push('is-visited');
+    if (st === 'current') classes.push('is-visited', 'is-current');
+    else if (st === 'visited') classes.push('is-visited');
+    else if (st === 'blocked') classes.push('is-blocked');
     else classes.push('is-open', 'is-unseen');
-    if (id === currentNode) classes.push('is-current');
 
     const group = svgNode('g', { class: classes.join(' '), 'data-id': id });
-    const d = NODE_W / 2;
     const p = drawPos(node, regionId);       /* 绘制坐标 = 该区域的视觉坐标 + 固定噪声 */
 
     group.appendChild(svgNode('rect', {
       class: 'node-rect',
-      x: p.x - d, y: p.y - NODE_H / 2, width: NODE_W, height: NODE_H,
+      x: p.x - d, y: p.y - h / 2, width: w, height: h,
     }));
     group.appendChild(svgNode('polygon', {
       class: 'node-diamond',
       points: `${p.x},${p.y - d} ${p.x + d},${p.y} ${p.x},${p.y + d} ${p.x - d},${p.y}`,
     }));
-    const label = svgNode('text', { class: 'node-name', x: p.x, y: p.y + 9 });
+    const label = svgNode('text', {
+      class: 'node-name', x: p.x, y: p.y + 9, style: `font-size:${nameSize}px`,
+    });
     label.textContent = node.name;
     group.appendChild(label);
 
     /* 当前所在节点：名字下方再加一行「你在这里」；描边加粗由 CSS 的 .is-current 负责 */
-    if (id === currentNode) {
-      const here = svgNode('text', { class: 'node-here', x: p.x, y: p.y + NODE_H / 2 + 16 });
-      here.textContent = UI.mapHere;
-      group.appendChild(here);
+    if (st === 'current') {
+      const hereEl = svgNode('text', {
+        class: 'node-here', x: p.x, y: p.y + h / 2 + 16, style: `font-size:${hereSize}px`,
+      });
+      hereEl.textContent = UI.mapHere;
+      group.appendChild(hereEl);
     }
 
     layers.nodes.appendChild(group);

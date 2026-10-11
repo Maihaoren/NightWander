@@ -39,6 +39,9 @@ export const UI = {
   notHere: '你现在不在这里。',
   backToWorld: '返回大地图',
   backToArea: '返回区域地图',
+  /* 移动横幅：10 个 = + 空格 + 地点一 + 空格 + --> + 地点二 + 空格 + 10 个 = ／ 第二行是耗时 */
+    moved: (from, to) => `${'='.repeat(10)} ${from} -->${to} ${'='.repeat(10)}`,
+  timeCost: (sec) => `耗时：${sec}`,
   mapHere: '你在这里',
   /* 大地图区域通道的小标签：把这条通道靠哪些共享节点连起来说清楚 */
   mapRegionLink: (names) => names.join(' ↔ '),

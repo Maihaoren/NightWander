@@ -43,7 +43,8 @@
   --fs-status: 13px;
   --fs-node: 26px;
   --fs-region: 24px;                      /* 大地图上的区域名 */
-  --fs-mapnote: 11px;                     /* 大地图通道标签 + 「你在这里」小字 */
+  --fs-mapnote: 11px;                     /* 「你在这里」小字 */
+  --fs-link: 15px;                        /* 大地图区域通道标签（要比区域块名 24px 明显小，但得看得清） */
   --fs-ascii: min(1.7vh, 1.05vw, 15px);   /* ascii 图 60-80 列，字号按面板宽度自适应 */
   --lh-ascii: 1.12;
 }
@@ -222,8 +223,22 @@ body {
    否则实心节点之间完全看不出区别 */
 .map .node.is-current .node-rect {
   stroke: var(--paper);
-  stroke-width: 9;
+  stroke-width: calc(9px * var(--node-scale, 1));   /* 随节点自适应缩放一起变 */
 }
+
+/* 已访问、但当前区域内没有「已探明路径」能走到：灰色描边 + 虚线 + 降透明度，
+   与实心块（可点）和菱形（未访问可点）都明显区分 */
+.map .node.is-blocked { opacity: 0.45; }
+
+.map .node.is-blocked .node-rect {
+  fill: var(--node-fill);
+  stroke: var(--muted);
+  stroke-width: calc(2px * var(--node-scale, 1));
+  stroke-dasharray: calc(6px * var(--node-scale, 1)) calc(4px * var(--node-scale, 1));
+  stroke-dashoffset: 0;
+}
+
+.map .node.is-blocked .node-name { fill: var(--muted); }
 
 /* 「你在这里」小字，只挂在当前节点上 */
 .map .node-here {
@@ -319,7 +334,7 @@ body {
 .map .region-link-label {
   fill: var(--muted);
   font-family: var(--font-ui);
-  font-size: var(--fs-mapnote);
+  font-size: var(--fs-link);
   text-anchor: middle;
   pointer-events: none;
 }

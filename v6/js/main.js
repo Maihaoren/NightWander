@@ -10,9 +10,10 @@ import {
 } from './config.js';
 import { UI, SCENES, ITEMS } from './texts.js';
 import {
-  initMap, refreshMap, setMapView, getNode, getNodes, getRegion, getNodeIds, computeClickable,
+  initMap, refreshMap, setMapView, getNode, getNodes, getRegion, getNodeIds,
   isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
-  isSharedNode, primaryShelterOf, getVisitedIn, computeMoveCost, REGIONS, HOME_ID,
+  isSharedNode, primaryShelterOf, getVisitedIn, computeMoveCost,
+  reachableVisited, hasDirectEdge, REGIONS, HOME_ID,
 } from './map.js';
 import * as terminal from './terminal.js';
 import * as modal from './modal.js';
@@ -32,6 +33,7 @@ const RECHARGE_AREA = 'home';
 
 let nightEnded = false;      /* 本轮移动/选项期间是否刚好天亮了 */
 let sceneEl = null;
+let pendingMove = null;      /* 本次移动的 { fromId, toId, cost }，供 arriveAt 打印移动横幅 */
 
 /** 当前所在安全屋的储物键（节点 id 全局唯一，直接用 id）；不在安全屋时返回 null */
 function currentShelterKey() {
@@ -57,11 +59,15 @@ function switchMapView(view) {
 }
 
 /**
- * 「返回」按钮的文案跟着当前视图走：
- *   在大地图上   → 「返回区域地图」
- *   在区域地图上 → 「返回大地图」
- * 点击行为不变（仍然只是 switchMapView('world')）。
+ * 「返回」按钮的点击目标跟着上下文走（上一条补丁只改了文案、没改 target，是 bug）：
+ *   在大地图上   → 回到【玩家当前所在区域】的区域地图（不是固定的 area1）
+ *   在区域地图上 → 回到大地图
+ * 文案同步：大地图上显示「返回区域地图」，区域地图上显示「返回大地图」。
  */
+function onBackButtonClick() {
+  switchMapView(game.getMapView() === 'world' ? 'area' : 'world');
+}
+
 function updateBackButton(view) {
   const button = document.getElementById('back-to-world');
   if (button) button.textContent = view === 'world' ? UI.backToArea : UI.backToWorld;
@@ -468,29 +474,30 @@ async function travelTo(id) {
     return;
   }
 
-  /* 只能在当前区域内移动：节点必须属于当前区域，且只查这个区域的边 */
-  if (!getNodeIds(area).includes(id)) {
-    terminal.log(UI.farAway);
-    return;
-  }
-  /* 共享节点（home / lighthouse）的访问记录可能只落在另一个区域，所以用跨区域的 getVisitedIn */
-  if (!computeClickable(area, getVisitedIn(area)).has(id)) {
-    terminal.log(UI.farAway);
-    return;
-  }
+  /* 只能在当前区域内移动 */
+  if (!getNodeIds(area).includes(id)) return;
+
+  /* 可点性：已访问的走「已探明路径连通」，未访问的只看是否与当前节点直接相邻。
+     不可点就静默返回 —— 不移动、不扣体力、不推时间、不弹提示 */
+  const here = game.getCurrentNode();
+  const visitedIn = getVisitedIn(area);
+  const clickable = visitedIn.has(id)
+    ? reachableVisited(area, here, visitedIn).has(id)
+    : hasDirectEdge(area, here, id);
+  if (!clickable) return;
+
   if (game.getStamina() < MOVE_STAMINA_COST) {        /* 1 */
     terminal.log(UI.noStamina);
     return;
   }
 
-  /* 2 两节点间移动耗时：有直接边按那条边算；没有边走 BFS 最短路逐跳累加；
-       不连通返回 null —— 此时点不动，也不消耗任何资源 */
-  const cost = computeMoveCost(game.getCurrentNode(), id, area);
-  if (cost === null) {
-    terminal.log(UI.farAway);
-    return;
-  }
+  /* 2 两节点间移动耗时：有直接边按那条边算；没有边沿已探明路径逐跳累加；
+       不连通返回 null —— 同样静默拒绝 */
+  const cost = computeMoveCost(here, id, area, visitedIn);
+  if (cost === null) return;
   const firstVisit = !game.isVisited(area, id);
+
+  pendingMove = { fromId: here, toId: id, cost };     /* 供 arriveAt 打印移动横幅 */
 
   nightEnded = false;
   game.spendStamina(MOVE_STAMINA_COST);              /* 3 */
@@ -522,8 +529,19 @@ async function arriveAt(node) {
   setSceneArt(node.ascii);
   refreshButtons();   /* 先让按钮行切到当前地点：拾取弹窗会阻塞后续流程，期间不该显示上个地点的按钮 */
 
+  /* 移动横幅：一次移动显示「地点一 -->地点二」+ 耗时；
+     非移动类到达（开局 / 过夜 / 强制回家 / debug 传送）没有 from，退回旧文案 */
+  const move = pendingMove;
+  pendingMove = null;
+
   terminal.log('');                                  /* 到达前空行 */
-  terminal.log(UI.arrived(node.name), 'arrival');    /* 1 斜体到达文本 */
+  if (move && move.toId === node.id) {
+    const fromNode = getNode(move.fromId);
+    terminal.log(UI.moved(fromNode ? fromNode.name : '？', node.name), 'arrival');
+    terminal.log(UI.timeCost(move.cost));
+  } else {
+    terminal.log(UI.arrived(node.name), 'arrival');   /* 1 斜体到达文本 */
+  }
   terminal.log('');                                  /* 到达后空行 */
   terminal.log(node.desc);                           /* 2 */
   terminal.log(UI.prompt);                           /* 3 */
@@ -1053,7 +1071,7 @@ function boot() {
   terminal.initTerminal({ onSubmit: handleCommand });
 
   const worldButton = document.getElementById('back-to-world');
-  if (worldButton) worldButton.addEventListener('click', () => switchMapView('world'));
+  if (worldButton) worldButton.addEventListener('click', onBackButtonClick);
 
   game.initState(HOME_ID);
   switchMapView(game.getMapView());   /* 新开局按 state 的默认值显示大地图 */
