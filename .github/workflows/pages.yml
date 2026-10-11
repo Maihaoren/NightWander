@@ -1,0 +1,55 @@
+# ============================================================
+# 把 v6/ 发布到 GitHub Pages
+#
+# 本项目是零依赖零构建的纯静态站点，不需要 npm install / 打包步骤，
+# 因此这个 workflow 只做三件事：检出代码 -> 把 v6/ 打成 Pages 制品 -> 发布。
+#
+# 发布结果：https://maihaoren.github.io/NightWander/
+# （v6/ 目录内容成为站点根，所以仓库根目录不需要 index.html）
+# ============================================================
+
+name: Deploy to GitHub Pages
+
+on:
+  # main 分支有推送就自动重新部署
+  push:
+    branches: [main]
+  # 也允许在 Actions 页面手动点按钮触发
+  workflow_dispatch:
+
+# GitHub Pages 部署所需的最小权限
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只跑一个部署；新推送取消正在排队的旧任务，
+# 但不会打断已经在发布中的那次（避免站点处于半成品状态）
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 配置 Pages（若未启用则自动启用）
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: 打包 v6/ 为站点制品
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # 只发布 v6/，它成为站点根目录
+          path: v6
+
+      - name: 发布到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
