@@ -1,15 +1,17 @@
 /**
- * events.js —— 随机事件池（v1.8.12：弹窗 + 必须决断）
+ * events.js —— 随机事件池（v1.8.13：选择弹窗 + 结果弹窗）
  *
  * 只做四件事：定义事件池、掷骰、把「玩家选的选项」执行掉。
  * 不碰 DOM —— 弹窗由 main.js 调 modal.js 弹，文案全部来自 texts.js 的 EVENTS。
  *
  * 事件结构（EVENT_POOL 的每一项）：
- *   { id, desc, options: [{ label, effect }] }
- *   desc    —— 弹窗里的描述（来自 texts.js）
- *   label   —— 选项按钮文字（来自 texts.js）
- *   effect  —— 函数，执行该选项的状态改动；接收 ctx = { node }，
- *              可返回 { spawned?: 物品名 } 之类的附加信息给终端用
+ *   { id, desc, options: [{ label, effect, result, effectText }] }
+ *   desc       —— 描述（双出：终端 + 选择弹窗）
+ *   label      —— 选项按钮文字（来自 texts.js）
+ *   effect     —— 函数，执行该选项的状态改动；接收 ctx = { node }，
+ *                 可返回 { spawned?: 物品名 } 之类的附加信息
+ *   result     —— 结果文案（单出：只在结果弹窗里显示，终端不重复）
+ *   effectText —— 效果说明，只在 config.EVENT_HOVER_SHOW_EFFECT === true 时当悬浮提示
  *
  * 触发时机（由 main.js 决定，本模块不自己挂时机）：
  *   1) 移动到达节点时掷一次
@@ -94,6 +96,11 @@ const EFFECTS = {
 /**
  * 事件池：把 texts.js 的文案与上面的效果拼成 { id, desc, options:[{label,effect}] }。
  * 加新事件只要在 texts.js 加一条 EVENTS、在这里加一组 EFFECTS。
+ *
+ * 每个选项额外带两段文案（都来自 texts.js，见那边的说明）：
+ *   result     —— 结果文案，只在【结果弹窗】里显示，终端不重复输出
+ *   effectText —— 效果说明，只在 config.EVENT_HOVER_SHOW_EFFECT === true 时
+ *                 由 main.js 当作按钮的悬浮提示（title）
  */
 export const EVENT_POOL = Object.keys(EVENTS).map((id) => {
   const copy = EVENTS[id];
@@ -104,7 +111,8 @@ export const EVENT_POOL = Object.keys(EVENTS).map((id) => {
     options: (copy.options || []).map((label, index) => ({
       label,
       effect: effects[index] || (() => null),
-      reply: (copy.replies || [])[index] || '',
+      result: (copy.results || [])[index] || '',
+      effectText: (copy.effects || [])[index] || '',
     })),
   };
 });
@@ -154,8 +162,8 @@ export function rollEvent(nodeId = null, rng = Math.random) {
  * @param {object} event rollEvent() 返回的事件对象
  * @param {number} index 选项下标（0 / 1）
  * @param {string} [nodeId] 当前节点，默认用 state 里的
- * @returns {{ id:string, index:number, label:string, reply:string, spawned:string } | null}
- *   reply   —— 终端要补的一句（可为空串）
+ * @returns {{ id:string, index:number, label:string, result:string, spawned:string } | null}
+ *   result  —— 结果文案（来自 texts.js，交给结果弹窗显示；终端不重复输出）
  *   spawned —— 刷出来的物品名（没刷则空串）
  */
 export function runEventOption(event, index, nodeId = null) {
@@ -170,7 +178,7 @@ export function runEventOption(event, index, nodeId = null) {
     id: event.id,
     index: Number(index),
     label: option.label,
-    reply: option.reply || '',
+    result: option.result || '',
     spawned: outcome.spawned || '',
   };
 }

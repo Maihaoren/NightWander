@@ -6,7 +6,7 @@
 
 import {
   STAMINA_MIN, BATTERY_MAX, FORCE_HOME_PENALTY, MOVE_STAMINA_COST, TICK_INTERVAL_MS, DEBUG_CONSOLE,
-  SHELTER_OVERNIGHT_COST_SEC,
+  SHELTER_OVERNIGHT_COST_SEC, EVENT_HOVER_SHOW_EFFECT,
 } from './config.js';
 import { UI, SCENES, ITEMS } from './texts.js';
 import {
@@ -908,8 +908,15 @@ async function withTimePaused(run) {
 
 /**
  * 在某个触发点掷一次随机事件。
- * 命中就弹「必须选一个」的模态（只有两个选项按钮、没有底部按钮、点遮罩也不关闭），
- * 选完执行对应效果并打印结果；弹窗期间时间暂停、终端锁输入（见 withTimePaused）。
+ *
+ * 流程（**整段共用一个 withTimePaused**，所以从弹出选择窗到结果窗关掉，时间一直暂停、终端一直锁输入）：
+ *   1. 命中 → 先把【描述】打到终端（保留叙事流历史），紧接着弹选择窗，选择窗里也显示同一段描述 —— 描述的「双出」
+ *   2. 选一个选项（只有选项按钮、没有底部按钮、点遮罩不关闭 → 必须选）
+ *   3. **先执行 effect**，再弹【结果窗】：只有结果文案 + 一个「继续」按钮
+ *   4. 点「继续」→ 关窗 → 整段结束，时间恢复、终端解锁
+ *
+ * 输出去重：描述双出（终端 + 选择窗）；结果文案只出现在结果窗里（终端不再重复），
+ * 终端只额外留一行「> 选项文字」作为玩家操作的记录（与其它选项的回显一致）。
  *
  * 系统关着 / 没命中 / 游戏结束都返回 null，什么都不做。
  */
@@ -917,32 +924,53 @@ async function rollRandomEvent(nodeId = null) {
   const event = events.rollEvent(nodeId);
   if (!event) return null;
 
-  const picked = await withTimePaused(() => modal.showModal({
-    title: UI.eventTitle,
-    desc: event.desc,
-    /* 两个选项做成 items：只有它们能 resolve，所以必须选一个才能继续 */
-    items: event.options.map((option, index) => ({ id: index, text: option.label })),
-    actions: [],                                     /* 没有底部按钮：不能跳过、不能直接关闭 */
-  }));
+  /* 规则 1：描述双出。时机在弹选择窗【之前】，不等玩家选完
+     （map-modal 只盖地图区，终端那条会照常排进输出里） */
+  terminal.log(event.desc);
 
-  if (!picked || picked.type !== 'item') return null;   /* 理论上不会发生（没有别的关闭途径） */
+  return withTimePaused(async () => {
+    const picked = await modal.showModal({
+      title: UI.eventTitle,
+      desc: event.desc,
+      /* 两个选项做成 items：只有它们能 resolve，所以必须选一个才能继续。
+         悬浮提示只在 config.EVENT_HOVER_SHOW_EFFECT === true 时带上（modal 会写成 button.title） */
+      items: event.options.map((option, index) => ({
+        id: index,
+        text: option.label,
+        hint: EVENT_HOVER_SHOW_EFFECT ? option.effectText : '',
+      })),
+      actions: [],                                   /* 没有底部按钮：不能跳过、不能直接关闭 */
+    });
 
-  const index = Number(picked.id);
-  const option = event.options[index];
-  if (!option) return null;
+    if (!picked || picked.type !== 'item') return null;   /* 理论上不会发生（没有别的关闭途径） */
 
-  const outcome = events.runEventOption(event, index, nodeId) || {};
+    const index = Number(picked.id);
+    const option = event.options[index];
+    if (!option) return null;
 
-  terminal.log(UI.echo(option.label));                 /* 回看：> 选项文本 */
-  if (outcome.reply) terminal.log(outcome.reply);      /* 该选项的氛围 / 结果文案 */
-  if (outcome.spawned) terminal.log(UI.eventSpawned(outcome.spawned));
+    /* 规则 2：先执行效果 */
+    const outcome = events.runEventOption(event, index, nodeId) || {};
+    terminal.log(UI.echo(option.label));               /* 玩家操作的记录（与其它选项回显一致） */
 
-  /* 效果可能改了体力 / 电量 / 时间 / 节点物品池，重绘一次 */
-  onBatteryCollapse();                                 /* 电量被用干、人又在黑暗地点 → 走断电回家 */
-  renderStatusBar();
-  renderInventory();
-  refreshMap({ current: game.getCurrentNode() });
-  return { id: event.id, index };
+    /* 效果可能改了体力 / 电量 / 时间 / 节点物品池，先重绘一次再弹结果窗 */
+    onBatteryCollapse();                               /* 电量被用干、人又在黑暗地点 → 走断电回家 */
+    renderStatusBar();
+    renderInventory();
+    refreshMap({ current: game.getCurrentNode() });
+
+    /* 规则 3：结果文案单出 —— 只进结果窗，终端不重复。
+       刷出物品时把物品名并进同一条（同一处显示，不另开一行） */
+    const resultLines = [outcome.result, outcome.spawned ? UI.eventSpawned(outcome.spawned) : '']
+      .filter(Boolean);
+    await modal.showModal({
+      title: UI.eventResultTitle,
+      desc: resultLines.join(' '),
+      items: [],
+      actions: [{ text: UI.eventContinue, value: 'continue' }],   /* 只有一个按钮 */
+    });
+
+    return { id: event.id, index };
+  });
 }
 
 /* ---------------- 选项执行 ---------------- */
@@ -1365,11 +1393,8 @@ function boot() {
   time.setDarkNodeResolver(isDarkNode);   /* 「这个节点是黑暗地点吗」→ 决定电量流逝速率 */
   time.setOnBatteryEmpty(onBatteryCollapse); /* 「流逝中电量掉到 0 了」→ 黑暗地点走断电回家 */
 
-  /* 时间暂停 / 恢复的提示（timeSystem 不认识终端）：只在 DEBUG_CONSOLE 开启时输出 */
-  time.setOnPauseChange((paused) => {
-    if (!DEBUG_CONSOLE) return;
-    terminal.log(paused ? UI.timePaused : UI.timeResumed);
-  });
+  /* v1.8.13：不再往终端输出「时间已暂停 / 时间已恢复」。
+     timeSystem 的暂停/恢复逻辑与 setOnPauseChange() 钩子都保持原样，只是这里不注册了 */
   /* 窗口隐藏 → 暂停（隐藏期间的时间不补足）；显示 → 重建基准并恢复 */
   time.watchVisibility();
 

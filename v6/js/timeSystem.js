@@ -46,7 +46,9 @@ export function setDarkNodeResolver(resolver) {
 
    窗口隐藏用固定 token 'hidden'；模态弹窗由 main.js 每次开窗分配一个唯一 token
   （'modal:1'、'modal:2'…），这样两个弹窗叠在一起时先关掉的那个不会把另一个的暂停解除掉。
-   暂停/恢复的提示由 main.js 注入的回调输出（timeSystem 不认识终端）。
+   setOnPauseChange() 是「暂停↔恢复」翻转时的通知钩子（timeSystem 不认识终端）。
+   v1.8.12 曾用它往终端打「时间已暂停 / 时间已恢复」，v1.8.13 起不再输出，
+   所以 main.js 不再注册；钩子本身保留，暂停/恢复逻辑不受影响。
 */
 const HIDDEN_REASON = 'hidden';
 const pauseTokens = new Set();

@@ -27,5 +27,8 @@ export const SHELTER_OVERNIGHT_COST_SEC = 0; /* 安全屋「过夜」耗时（0 
 export const TERMINAL_HISTORY_MAX = 50;    /* 终端历史最多保存条数 */
 export const EVENTS_DEFAULT = false;      /* 随机事件系统默认关闭（测试时用 /event on 打开） */
 export const EVENT_CHANCE = 0.15;         /* 随机事件触发几率：每个触发点掷一次（0.15 = 15%） */
-export const GAME_VERSION = 'v1.8.12';     /* 游戏版本号 */
+/* 事件选项按钮上是否用悬浮提示显示该选项的效果（文案在 texts.js 的 EVENTS[id].effects）。
+   默认 false = 不显示，保持探索感；改成 true 就显示。只影响悬浮提示，不影响按钮点击 */
+export const EVENT_HOVER_SHOW_EFFECT = false;
+export const GAME_VERSION = 'v1.8.13';     /* 游戏版本号 */
 export const DEBUG_CONSOLE = true;       /* 调试指令开关：true 时 "/" 开头的输入交给 js/debug.js */
