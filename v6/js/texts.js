@@ -84,6 +84,10 @@ export const UI = {
   toPocket: (name) => `你把${name}收进了口袋。`,
   unequip: (name) => `你脱下了${name}。`,
   backToStorage: (name) => `你把${name}放回了储物箱。`,
+  /* 野外丢弃：物品旁的入口按钮文字 + 丢弃结果文案（不消耗时间，之后还能捡回来） */
+  dropItem: '丢弃',
+  dropped: (name) => `你把${name}丢在了地上。`,
+  dropHint: (name) => `把${name}丢在当前地点，不消耗时间，之后还能捡回来`,
 
   farAway: '那里太远了，你还不认识路。',
   mustResolveFirst: '你需要先在这里做出决定。',

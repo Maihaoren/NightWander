@@ -312,6 +312,15 @@ export function markItemCollected(id) {
   state.collectedItems.add(id);
 }
 
+/**
+ * 解除「已拾取」标记：野外丢弃时用。
+ * collectedItems 决定节点物品列表里哪些条目不再显示，所以把东西丢回节点后必须解标记，
+ * 否则它躺在节点上也看不见、捡不回来。
+ */
+export function unmarkItemCollected(id) {
+  state.collectedItems.delete(id);
+}
+
 export function addToStorage(shelterKey, item) {
   getShelterStorage(shelterKey).push(item);
 }

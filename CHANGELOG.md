@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.8.8` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.8.9` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `3` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -34,6 +34,122 @@
 ## [未发布]
 
 （下一次开发从这里开始写。当前没有进行中的改动。）
+
+---
+
+## [v1.8.9] — 2026-10-11 —— 野外丢弃物品 + 修「黑暗归零强制回家没生效」
+
+**回档点**：`v1.8.9`
+
+### 修复
+
+**1. 野外丢弃物品（`inventory.js` + `main.js` + `texts.js` + `style.css` + `state.js`）**
+
+- 症状：在野外（没有安全屋的地方）物品栏里没有丢弃动作，背包一满就再也捡不了新东西。
+- 根因：物品栏的整理动作只有「安全屋里放回储物箱」这一套（`pocketToStorage` / `unequip`），
+  野外点口袋里的物品是「收进手持槽 / 查看」（`onPocketClickAway`），**根本没有把东西放回地面的入口**。
+- 修复：野外每一件随身物品右侧多一个「丢弃」按钮，点了就把东西放到当前节点的「当地物品」区。
+  - `inventory.js` 新增纯函数 `planDrop(item, equipped, pocket)`：判断「这件东西现在在哪」，
+    返回 `{ where: 'pocket' | 'hand' }` 或 `{ reason }`。**不写 state、不碰 DOM**，与同文件的
+    `planTakeFromStorage` / `planUnequip` / `planPocketToStorage` 同一套分工。
+  - `main.js` 新增 `addToNode(node, itemId)`（`dropFromNode` 的反操作）与 `dropItemToNode(item)`（真正改状态）。
+    关键一步是 `game.unmarkItemCollected(item.id)`：`collectedItems` 决定节点物品列表里哪些条目不再显示，
+    不解标记的话东西丢在脚下也看不见、捡不回来。
+  - `main.js` 新增 `carriedItemRow(label, { onClick, disabled, hint, onDrop, dropHint })`：物品按钮 + 右侧「丢弃」的行容器。
+    `onDrop` 为空时**只返回原来那一个按钮**，所以安全屋与装备槽的渲染结果与改动前逐字节一致。
+  - `state.js` 新增 `unmarkItemCollected(id)`（`markItemCollected` 的反操作）。
+  - `texts.js` 新增 `UI.dropItem`（「丢弃」）、`UI.dropped(name)`、`UI.dropHint(name)`。
+  - `style.css` 新增 `.inv-item` / `.inv-item__main` / `.inv-item__drop`（flex 行：物品按钮占满，丢弃按钮窄的一条）。
+- 规则落实：丢弃**不消耗时间**（没有 `time.advanceTime` 调用）、**不消耗体力**、丢弃后可再捡回（空间够）、
+  **手持槽里的东西也能丢**、安全屋里的整理模式（点一下 → 放回储物箱）**行为不变**。
+- 与请求的差异（已在交付说明里写明）：请求写的是「`inventory.js` 新增 `dropItem(item)`」+「`terminal.js` 物品栏渲染」，
+  实际是 —— ① 物品栏渲染不在 `terminal.js`（那里只渲染终端选项按钮），而在 `main.js` 的 `renderInventory()` 与 `itemButton()`；
+  ② `inventory.js` 按模块约定只做判定（文件头写明「状态改动由 main.js 调 state.js 完成；不碰 DOM」），
+  所以那里放的是纯函数 `planDrop`，真正的搬运写在 `main.js` 的 `dropItemToNode()`。
+
+**2. 黑暗归零强制回家没生效（`timeSystem.js` + `main.js`）**
+
+- 症状：人在 `dark_core` 里、电量归零，**没有**触发强制回家（要等电量从正数掉到 0 才有效）。
+- 根因（已复现）：`timeSystem.js` 的 `drainBatteryForGameSeconds()` 里写的是
+
+  ```js
+  if (game.getBattery() <= 0) return;          /* 已经没电：不再重复扣，也不重复触发 */   ← v1.8.8
+  game.spendBattery(...);
+  if (game.getBattery() <= 0 && onBatteryEmpty) onBatteryEmpty();
+  ```
+
+  这个提前 return 把「不重复扣」和「不重复通知」捆在了一起，于是**电量本来就是 0 的情形永远等不到
+  「从正数变 0」的那一跳**，而 tick 是唯一的连续检测者 —— 归零通知永远不会发出。
+  受影响的具体场景：调试指令 `/battery set 0`（最常用的测试手法）、导入一份电量为 0 的存档、
+  在黑暗地点用选项把电一次用干（`batteryCost` 直接扣到 0 而 `timeCost` 为 0 时没有流逝）。
+  只有「电量从 >0 被流逝扣到 0」这一条路径是通的，所以 v1.8.8 的自测（从 1% 扣到 0）没测出来。
+- 修复：把「不再累减」与「是否已见底要通知」拆开，新增 `notifyBatteryEmpty()`：
+
+  ```js
+  if (game.getBattery() > 0) game.spendBattery((sec / 3600) * batteryDrainPerHour());   /* 只在有电时累减 */
+  notifyBatteryEmpty();                                                                 /* 每次都比一次 */
+  ```
+
+  不做「只通知一次」的闩锁 —— 那种闩锁会在导入存档后变脏，漏掉后面的归零。
+  `main.js` 的 `onBatteryCollapse()` 本身就是幂等的（不在黑暗地点直接 `return false`），
+  所以每 tick 调一次没有副作用；真的执行时它会立刻把电量回满，也不会重复执行。
+  `drainBatteryOnDayChange()` 同样改用 `notifyBatteryEmpty()`。
+- 逐条对照请求里的排查清单（结论都写进了源码注释）：
+  1. `isDark` 查得到：标记在**节点数据**上（`map.getNode('dark_core').isDark === true`），
+     查询入口 `map.isDarkNode(nodeId)`。它刻意**不放 state**：节点数据是静态世界数据，不进存档，
+     `state` 只存动态进度；`main.js` 在 `boot()` 里用 `time.setDarkNodeResolver(isDarkNode)` 把它注入 timeSystem。
+  2. 归零检测里的分支：`main.js` 的 `onBatteryCollapse()` —— `if (!node || !isDarkNode(node.id)) return false;`
+     是 → 走黑暗归零流程；否 → 直接返回，交给原来的逻辑（没电在别处只意味着视野收缩 + 悬浮提示）。
+  3. 流程真的执行了传送 + 结算：`visitNode(HOME_ID, HOME_ID)` → `settleNight()`（天数 +1 / 时间归零 / 体力回满 / 电量回满），
+     实测节点与区域都变成 `home`、天数 +1、电量 100——不是只打印提示。
+  4. 没有被别的判断提前拦截：`tick` / `advanceTime` 里「扣电通知」都排在夜晚结束判断**之前**，
+     所以 06:00 天亮不会抢先；与体力归零是两条独立路径（判断的量、位置、后果都不同），
+     体力那条在 `travelTo` 里、且电量那条一旦执行就把体力回满，两者不会互相拦截。
+- 新增的实测用例（已验证）：电量**本来就是 0** 时下一个 tick 就触发；从 1% 扣到 0 照旧；
+  **走进黑暗地点那一刻刚好走干**（`travelTo` 在 `visitNode` 之后的落点检测）也会触发；
+  非黑暗地点没电连续多个 tick 都不会误传送；体力那条仍然扣上限、电量那条仍然不扣。
+
+### 变更
+
+| 文件 | 改动 |
+|---|---|
+| `v6/js/inventory.js` | 新增 `planDrop(item, equipped, pocket)` |
+| `v6/js/state.js` | 新增 `unmarkItemCollected(id)` |
+| `v6/js/timeSystem.js` | 拆出 `notifyBatteryEmpty()`；`drainBatteryForGameSeconds()` 不再因「已经是 0」而跳过通知；`drainBatteryOnDayChange()` 改用它 |
+| `v6/js/main.js` | 新增 `carriedItemRow()`、`addToNode()`、`dropItemToNode()`；`renderInventory()` 给口袋物品与手持槽加丢弃入口；`onBatteryCollapse()` 补注释（isDark 分支 / 两条独立路径 / 触发点） |
+| `v6/js/texts.js` | 新增 `UI.dropItem` / `UI.dropped(name)` / `UI.dropHint(name)` |
+| `v6/style.css` | 新增 `.inv-item` / `.inv-item__main` / `.inv-item__drop` |
+| `v6/js/config.js` | `GAME_VERSION` → `v1.8.9` |
+| `HANDOFF.md` | 游戏版本同步 `v1.8.9` |
+
+**存档格式**：`VERSION` 仍为 **`3`**，**未变**，旧存档照常加载（`unmarkItemCollected` 只改 `collectedItems` 这个已有字段的内容）。
+
+### 验证
+
+- 模块链接检查（10 个模块 OK，`main` 需 DOM）、DOM 桩 `boot()` 无异常、11 个 js 文件 `node --check` 通过、`style.css` 花括号 115/115 配平。
+- 54 项断言全部通过（`.tools/nw_r10_check.mjs`，DOM 桩里真跑 `boot()`、真点按钮、真跑 `tick`，用可控 `Date.now` 推进游戏时间）：
+  - **丢弃**：`planDrop` 的四种判定；安全屋 0 个丢弃入口且有储物箱区、野外 3 个（口袋 2 + 手持 1）；
+    每个入口套在 `.inv-item` 行里且行内正好两个按钮；点丢弃后 —— 口袋少一件、进当前节点物品池、
+    `collectedItems` 标记被解除、**时间与体力都没变**、终端打印「你把黄铜罗盘丢在了地上。」、
+    当地物品区立刻出现；再点就能捡回；容量 6/6 满时丢一件腾位后能捡回；
+    手持槽的东西也能丢且丢后槽位空出来；安全屋里点物品仍然是「放回储物箱」（储物箱 5 → 6）。
+  - **黑暗归零**：`isDark` 标记与查询；**电量本来就是 0** 一个 tick 内触发（回 home、天数 +1、时间归零、电量/体力回满、`staminaMax` 不变、打印「你在黑暗中失去了意识……」）；
+    从 1% 扣到 0 照旧；走进黑暗地点那一刻刚好走干也触发；非黑暗地点没电连续 3 个 tick 都不误传送；
+    体力 0 走到非安全屋仍然扣上限（10→9）而电量那条不扣；`elapsedSeconds` 推到 06:00 前 5 秒时仍然是黑暗归零先处理。
+- 旧套件回归：v1.8.6 / v1.8.7 / v1.8.8 的断言与端到端全部通过（其中 v1.8.8 那条「已经为 0 就不再重复触发」正是本次修掉的漏洞，已改写为「仍然继续通知」并注明原因）。
+
+### 已知限制 / 遗留
+
+- **丢弃入口只覆盖「没穿在身上」的东西**：口袋里的、手持槽里的。穿在身上的 `torso` / `legs` / `back`
+  是「穿着」而不是「带着」，脱下来还会改变口袋容量，所以野外不给丢弃入口（安全屋里照旧点一下 = 脱下放回储物箱）。
+- **丢弃入口只在“没有安全屋”的地方出现**。`lighthouse` / `northpass` / `southpass` 也是安全屋（有储物箱），
+  那里点物品仍然是「放回储物箱」，所以看不到丢弃按钮 —— 与请求里「野外（非 home）」的说法在
+  其它安全屋上略有差别：本实现按「有没有储物箱」划分，而不是按「是不是 home 区域」。
+- 丢弃后的物品会**跟随节点**留在原地：走到别的节点丢，就留在那个节点；回头再走到那个节点时，
+  到达流程的拾取弹窗会把它重新列出来。
+- 断电检测在电量已经是 0 时每 tick 都会问一次 `onBatteryCollapse()`（O(1) 的几个判断，代价可忽略）；
+  这里刻意不用闩锁，避免导入存档后闩锁变脏再次漏检。
+- 预先存在、本轮**未处理**：`m1`（枯树林）的 ASCII 图是 11 行，与项目「12 行」约定不符。
 
 ---
 

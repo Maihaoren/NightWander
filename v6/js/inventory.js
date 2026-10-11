@@ -118,3 +118,24 @@ export function planPocketToStorage(storage, capacity) {
   if (!hasStorageRoom(storage, capacity)) return { reason: '储物箱满了。' };
   return { ok: true };
 }
+
+/* ---------------- 野外丢弃（把随身物品放回当前节点） ---------------- */
+
+/**
+ * 野外丢弃一件随身物品的判定。纯函数：只说「这件东西现在在哪」，不改 state。
+ * 状态改动由 main.js 的 dropItemToNode() 负责（与其它整理操作同一套分工）。
+ *
+ * 只有【随身物品】能丢：
+ *   - 口袋里的
+ *   - 手持槽里的（手持槽就是保底物品栏，里面的东西当然属于玩家）
+ * 穿在身上的 torso / legs / back 是「穿着」而不是「带着」，
+ * 脱下来会改变口袋容量，所以不算随身物品 —— 要脱先回安全屋整理。
+ *
+ * @returns {{ where:'pocket'|'hand' } | { reason:string }}
+ */
+export function planDrop(item, equipped, pocket) {
+  if (!item) return { reason: '没有这件物品。' };
+  if (equipped && equipped.hand && equipped.hand === item) return { where: 'hand' };
+  if ((pocket || []).includes(item)) return { where: 'pocket' };
+  return { reason: '这件东西不在你身上。' };
+}

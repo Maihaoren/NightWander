@@ -67,28 +67,39 @@ export function resetClock() {
    只削【当前电量】，上限恒为 BATTERY_MAX；下限 0 由 state.setBattery 夹住。
    离散扣时的黑暗判定用「扣电那一刻玩家所在的节点」：
    离开黑暗地点那一步算黑暗速率（人还在黑暗里），走进黑暗地点那一步算自然速率。
+
+   【归零通知】只要扣电后电量是 0（或本来就是 0）就调一次 onBatteryEmpty。
+   「已经是 0 就不再通知」曾经是个 bug：电量本来就为 0 的情形（调试指令设 0、
+   导入电量 0 的存档、选项的 batteryCost 把电用干）永远等不到从正数变 0 的那一跳，
+   tick 也就永远发现不了，黑暗地点的强制回家不会触发。
+   main.js 那边的处理是幂等的（不在黑暗地点就 return false），所以每 tick 调一次没有副作用。
 */
 function batteryDrainPerHour() {
   const dark = darkNodeResolver(game.getCurrentNode());
   return BATTERY_NATURAL_DRAIN_PER_HOUR + (dark ? BATTERY_DARK_AREA_EXTRA_DRAIN_PER_HOUR : 0);
 }
 
-/** 按【游戏内秒数】连续积分扣当前电量；掉到 0 时通知 main.js */
+/** 电量见底就通知 main.js（每次调用都判一次，不做「只通知一次」的闩锁） */
+function notifyBatteryEmpty() {
+  if (game.getBattery() > 0) return;
+  if (onBatteryEmpty) onBatteryEmpty();
+}
+
+/** 按【游戏内秒数】连续积分扣当前电量；扣完（或本来就是 0）通知 main.js */
 function drainBatteryForGameSeconds(gameSeconds) {
   const sec = Number(gameSeconds);
   if (!Number.isFinite(sec) || sec <= 0) return;
-  if (game.getBattery() <= 0) return;                 /* 已经没电：不再重复扣，也不重复触发 */
 
-  game.spendBattery((sec / 3600) * batteryDrainPerHour());
+  /* 只有还有电才累减，避免在 0 上一直做减法 */
+  if (game.getBattery() > 0) game.spendBattery((sec / 3600) * batteryDrainPerHour());
 
-  if (game.getBattery() <= 0 && onBatteryEmpty) onBatteryEmpty();
+  notifyBatteryEmpty();
 }
 
 /** 跨天（天数 +1）时一次性扣电。由 main.js 在结算流程里调用，调用点必须在「回家回电」之前 */
 export function drainBatteryOnDayChange() {
-  if (game.getBattery() <= 0) return;
-  game.spendBattery(BATTERY_DAY_CHANGE_DRAIN);
-  if (game.getBattery() <= 0 && onBatteryEmpty) onBatteryEmpty();
+  if (game.getBattery() > 0) game.spendBattery(BATTERY_DAY_CHANGE_DRAIN);
+  notifyBatteryEmpty();
 }
 
 function tick() {

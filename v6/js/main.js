@@ -133,6 +133,37 @@ function itemButton(label, { onClick, disabled, hint } = {}) {
   return button;
 }
 
+/**
+ * 物品栏的一行：物品按钮（占满一行）+ 右侧可选的「丢弃」按钮。
+ *
+ * HTML 结构（onDrop 为空时只返回那一个按钮，与改动前完全一致）：
+ *   <div class="inv-item">
+ *     <button class="term-button item-button inv-item__main">物品名</button>
+ *     <button class="term-button inv-item__drop">丢弃</button>
+ *   </div>
+ *
+ * 「丢弃」入口只在野外出现（没有安全屋 = 没有储物箱可以放东西）；
+ * 安全屋里走原来的整理模式，物品按钮点击就是放回储物箱。
+ */
+function carriedItemRow(label, { onClick, disabled, hint, onDrop, dropHint } = {}) {
+  const main = itemButton(label, { onClick, disabled, hint });
+  if (typeof onDrop !== 'function') return main;
+
+  main.classList.add('inv-item__main');
+
+  const drop = document.createElement('button');
+  drop.type = 'button';
+  drop.className = 'term-button inv-item__drop';
+  drop.textContent = UI.dropItem;
+  if (dropHint) drop.title = dropHint;
+  drop.addEventListener('click', onDrop);
+
+  const row = document.createElement('div');
+  row.className = 'inv-item';
+  row.append(main, drop);
+  return row;
+}
+
 function section(title, nodes) {
   const box = document.createElement('div');
   box.className = 'inv-section';
@@ -185,12 +216,15 @@ function renderInventory() {
     const label = `${UI.slotName[slot]}：${item ? item.name : UI.inventory.emptySlot}`;
 
     if (slot === 'hand') {
-      return itemButton(label, {
+      return carriedItemRow(label, {
         onClick: () => handToPocket(),
         disabled: !item,
         hint: item
           ? (atHome ? '点击收回口袋（口袋满则放回储物箱）' : '点击收回口袋')
           : '保底物品栏：固定 1 格，任何物品都能放',
+        /* 手持槽里的东西也是随身物品，野外同样能丢（丢完这一格就空出来了） */
+        onDrop: (atHome && item) ? null : (item ? () => dropItemToNode(item) : null),
+        dropHint: item ? UI.dropHint(item.name) : '',
       });
     }
     if (!atHome) return itemButton(label, { onClick: () => inspectItem(item), disabled: !item });
@@ -237,9 +271,13 @@ function renderInventory() {
     ));
   }
 
-  el.appendChild(section(UI.inventory.pocket, pocket.map((item) => itemButton(item.name, {
+  /* 口袋：每件 —— 安全屋点一下放回储物箱（整理模式，行为不变）；
+     野外点一下是收进手持槽（原行为），右侧额外给一个「丢弃」入口 */
+  el.appendChild(section(UI.inventory.pocket, pocket.map((item) => carriedItemRow(item.name, {
     onClick: atHome ? () => pocketToStorage(item) : () => onPocketClickAway(item),
     hint: item.slot ? `${UI.slotName[item.slot]}槽物品` : '',
+    onDrop: atHome ? null : () => dropItemToNode(item),
+    dropHint: UI.dropHint(item.name),
   }))));
 }
 
@@ -793,6 +831,43 @@ function dropFromNode(node, itemId) {
   if (i >= 0) node.items.splice(i, 1);
 }
 
+/** 把一件东西放回节点物品池（野外丢弃用）；已经在列表里就不重复加 */
+function addToNode(node, itemId) {
+  if (!node.items.includes(itemId)) node.items.push(itemId);
+}
+
+/**
+ * 野外丢弃一件随身物品：从玩家身上摘下来，放回【当前节点】的「当地物品」区。
+ *   - 不消耗时间、不消耗体力
+ *   - 解除 collectedItems 里的「已拾取」标记，否则它躺在节点上也看不见、捡不回来
+ *   - 之后可以再捡回来（前提是口袋/手持槽有位置）
+ *   - 只在野外有入口；安全屋里物品按钮点击是「放回储物箱」，行为不变
+ * 「在哪」的判断在 inventory.planDrop，状态改动在这里调 state.js 完成（与其它整理操作同一套分工）。
+ */
+function dropItemToNode(item) {
+  if (game.isGameOver()) return;
+
+  const node = getNode(game.getCurrentNode());
+  if (!node) return;
+
+  const plan = inventory.planDrop(item, game.getEquipped(), game.getPocket());
+  if (plan.reason) {
+    terminal.log(plan.reason);
+    return;
+  }
+
+  /* 1 从玩家身上摘下来 */
+  if (plan.where === 'hand') game.setEquippedSlot('hand', null);
+  else game.removeFromPocket(item);
+
+  /* 2 放回当前节点的物品池，并让它重新变成「当地物品」 */
+  addToNode(node, item.id);
+  game.unmarkItemCollected(item.id);
+
+  terminal.log(UI.dropped(item.name));
+  renderInventory();                                 /* 刷新物品栏 + 当地物品区 */
+}
+
 /* ---------------- 选项执行 ---------------- */
 
 async function onOptionClick(index) {
@@ -930,11 +1005,20 @@ function redrawShelterQuietly() {
  *   送回 home + 天数 +1 + 时间归零 + 体力回满 + 电量回满，
  *   但**不扣体力上限**（这是与体力归零强制回家的唯一区别），所以不会因此 gameOver。
  *
+ * 【与体力归零是两条独立路径】：
+ *   体力：travelTo 里走完到达流程后判断 `getStamina() < 0` → 安全屋就地结算 / onForceHome('stamina')（扣上限）
+ *   电量：本函数，判断 `getBattery() === 0 && 当前节点 isDark` → 传送 + 结算（不扣上限）
+ *   两者判断的量、位置、后果都不同；本函数先跑，它一旦执行就把电量回满、体力回满，
+ *   所以同一时刻两者都成立时也不会互相拦截（电量断电先处理，之后体力一定是满的）。
+ *   06:00 天亮那条也同样不会抢先：tick / advanceTime 里扣电通知都排在夜晚结束判断之前。
+ *
  * 全程同步：tick 里的电量流逝是定时器回调，等不了 await；而用到的
  * visitNode / settleNight / redrawShelterQuietly 本来就都是同步的。
  *
  * 触发点（都是「电量已经为 0」这一件事的不同来源）：
- *   1) timeSystem 的流逝扣电（tick 连续积分 / advanceTime 离散）→ 通过 setOnBatteryEmpty 回调
+ *   1) timeSystem 的流逝扣电（tick 连续积分 / advanceTime 离散）→ 通过 setOnBatteryEmpty 回调。
+ *      注意 timeSystem 是「只要电量是 0 就每次都通知」，所以「本来就是 0」的情形
+ *      （调试指令设 0、导入电量 0 的存档）也会在下一个 tick 被发现 —— v1.8.8 曾漏掉这一类。
  *   2) 选项自带的 batteryCost 直接扣到 0
  *   3) 走进黑暗地点那一刻（路上扣到 0，落点就是黑暗地点）
  *
@@ -944,8 +1028,10 @@ function onBatteryCollapse() {
   if (game.isGameOver()) return false;
   if (game.getBattery() > 0) return false;
 
+  /* 分支：当前节点是黑暗地点 → 走黑暗归零流程；不是 → 直接 return，交给原来的逻辑
+     （没电在别处只意味着视野收缩 + 悬浮提示「没电了」，不会有任何传送） */
   const node = getNode(game.getCurrentNode());
-  if (!node || !isDarkNode(node.id)) return false;   /* 非黑暗地点：没电只是视野收缩，不做任何事 */
+  if (!node || !isDarkNode(node.id)) return false;
 
   terminal.clearQueue();
   terminal.log(UI.darkCollapse);

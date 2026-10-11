@@ -429,6 +429,37 @@ body {
 
 .item-button:last-child { margin-bottom: 0; }
 
+/* 野外的一行物品：物品按钮占满，右侧跟一个窄的「丢弃」按钮。
+   安全屋 / 装备槽不需要丢弃时，只有那个物品按钮，不套这一层行容器。 */
+.inv-item {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.inv-item:last-child { margin-bottom: 0; }
+
+.inv-item .item-button { margin-bottom: 0; }
+
+.inv-item__main {
+  flex: 1 1 auto;
+  min-width: 0;              /* 名字太长时允许收缩，不把丢弃按钮挤出面板 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inv-item__drop {
+  flex: 0 0 auto;
+  width: auto;
+  padding-left: 8px;
+  padding-right: 8px;
+  color: var(--muted);
+}
+
+.inv-item__drop:hover:not(:disabled) { color: var(--term-bg); }
+
 /* ---------- 终端 ---------- */
 .panel--terminal {
   background: var(--term-bg);
