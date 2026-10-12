@@ -27,7 +27,11 @@ const REQUIRED = ['day', 'elapsedSeconds', 'currentArea', 'mapView', 'currentNod
   /* v1.9.0b1.1 新增：已触发过的随机事件 id。
      它列在 REQUIRED 里，但**缺失不算无效存档** —— 见下面 deserialize 里的补默认值。
      这样「字段表完整」与「旧档仍能读」两件事同时成立，存档版本号也不用动（仍是 v4）。 */
-  'triggeredEventIds'];
+  'triggeredEventIds',
+  /* v1.9.0b3.1 新增：已出现过的【荒野负面遭遇】所在节点 id（改动 7 的 once 标记）。
+     与 triggeredEventIds 同一套可选兼容：列进 REQUIRED、缺失时补空数组，
+     所以 v4 的旧档照样能读，版本号不动。 */
+  'triggeredNegativeEvents'];
 
 /** 快照 → 存档字符串（Base64） */
 export function serialize(snapshot) {
@@ -59,8 +63,15 @@ export function deserialize(text) {
       data.triggeredEventIds = [];
     }
 
+    /* 【v1.9.0b3.1 可选兼容】triggeredNegativeEvents 同理：v4 的旧档没有这个字段，
+       补成空数组即可（负面遭遇只是「还能再触发一次」，不影响旧档的有效性）。 */
+    if (data.triggeredNegativeEvents === undefined || data.triggeredNegativeEvents === null) {
+      data.triggeredNegativeEvents = [];
+    }
+
     if (!REQUIRED.every((key) => data[key] !== undefined && data[key] !== null)) return null;
     if (!Array.isArray(data.triggeredEventIds)) return null;
+    if (!Array.isArray(data.triggeredNegativeEvents)) return null;
     if (!Array.isArray(data.pocket)) return null;
     if (!data.usedOptions || typeof data.usedOptions !== 'object' || !Array.isArray(data.usedGroups)) return null;
     if (!data.equipped || typeof data.equipped !== 'object') return null;

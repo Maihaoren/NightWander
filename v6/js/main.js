@@ -8,7 +8,7 @@ import {
   STAMINA_MIN, BATTERY_MAX, FORCE_HOME_PENALTY, MOVE_STAMINA_COST, TICK_INTERVAL_MS, DEBUG_CONSOLE,
   SHELTER_OVERNIGHT_COST_SEC, EVENTS_DEFAULT, EVENT_HOVER_SHOW_EFFECT,
 } from './config.js';
-import { UI, ITEMS, DOCUMENTS, EXCHANGES } from './texts.js';
+import { UI, ITEMS, DOCUMENTS, EXCHANGES, NEGATIVE_EVENTS } from './texts.js';
 import {
   initMap, refreshMap, setMapView, getNode, getNodes, getRegion, getNodeIds,
   isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
@@ -743,6 +743,61 @@ function spawnItemOnNode(node, itemId) {
   return true;
 }
 
+/* ===============================================================
+   荒野的纯负面遭遇（v1.9.0b3.1 改动 7）
+   ---------------------------------------------------------------
+   挂在地点上的「到达即弹窗」强制二选一（哪些节点挂见 map.js 的 NEGATIVE_EVENT_BY_NODE）。
+   两个选项都不划算：一个失体力（-2）、一个失时间（+600 秒）。
+   - 弹窗标题留空、没有关闭按钮、没有底部按钮 → 必须选一个
+   - 期间时间暂停（走既有 withTimePaused），与事件 / 拾取 / mustResolve / 安全屋弹窗 await 串行
+   - once：选完之后把节点 id 记进 state.triggeredNegativeEvents（进存档），离开再回来不再弹
+   - 终端不额外输出：叙事全在弹窗里（与资源交换不同，交换会往终端补一句 narrate）
+   =============================================================== */
+const NEGATIVE_EFFECTS = {
+  stamina: { stamina: -2 },      /* 硬着头皮冲过去：体力 -2 */
+  time: { seconds: 600 },        /* 绕路慢慢挪：时间 +600 秒 */
+};
+
+/**
+ * 到达一个挂了负面遭遇的地点时的强制二选一。由 arriveAt 在资源选项行之后调用。
+ * @returns {Promise<boolean>} 是否真的弹了窗（没挂遭遇 / 已经触发过 → false）
+ */
+async function resolveNegativeEvent(node) {
+  if (!node || game.isGameOver()) return false;
+
+  const eventId = node.negativeEvent;
+  const ev = eventId ? NEGATIVE_EVENTS[eventId] : null;
+  if (!ev) return false;
+
+  /* once：这个地点的遭遇已经出现过（存档里记着）→ 不再弹 */
+  if (game.isNegativeEventTriggered(node.id)) return false;
+
+  const picked = await withTimePaused(() => modal.showModal({
+    title: '',                                   /* 标题留空（沿用资源交换弹窗的写法） */
+    desc: ev.desc,
+    items: [
+      { id: 'push', text: ev.options[0] },       /* 选项一：失体力 */
+      { id: 'detour', text: ev.options[1] },     /* 选项二：失时间 */
+    ],
+    actions: [],                                 /* 没有底部按钮：必须从两项里选一个 */
+  }));
+
+  /* 没有别的关闭途径，理论上一定拿得到选项；拿不到（被外部关掉）就不打标记，下次再弹 */
+  if (!picked || picked.type !== 'item') return false;
+
+  game.markNegativeEventTriggered(node.id);
+
+  const fx = picked.id === 'push' ? NEGATIVE_EFFECTS.stamina : NEGATIVE_EFFECTS.time;
+  if (fx.stamina) game.spendStamina(-fx.stamina);     /* 取负：正数表示加体力，自带上限夹取 */
+  if (fx.seconds) time.advanceTime(fx.seconds);
+  if (!batteryCollapsed) onBatteryCollapse();         /* 时间推进可能把电走干（沿用既有检测） */
+
+  renderStatusBar();
+  renderInventory();
+  refreshButtons();
+  return true;
+}
+
 /**
  * 【到达自动弹窗】的「本次停留已弹过」守卫（v1.9.0b2.1 立、v1.9.0b2.2 起只剩安全屋在用）。
  *
@@ -1043,6 +1098,11 @@ async function arriveAt(node) {
 
   /* 8 v1.9.0b2.2【改动 2】：资源交换不再是到达自动弹窗 —— 它是地点按钮行里的一个可点选项，
         由玩家自己点（见 exchangeAtNode）。所以这里没有第 8 步了。 */
+
+  /* 8.5 【v1.9.0b3.1 改动 7】荒野的纯负面遭遇：到达就弹、强制二选一、once。
+         位置在 mustResolve 之后、安全屋弹窗之前 —— 全部 await 串行，不会两个弹窗叠在一起。
+         与资源交换不冲突：交换是选项按钮（要玩家点），遭遇是自动弹窗。 */
+  await resolveNegativeEvent(node);
 
   /* 9 【改动 4】到达安全屋 → 弹 5 选 1 的安全屋弹窗（过夜 / 导出 / 导入 / 显示大地图 / 稍作停留）。
         它排在所有流程之后；关掉之后玩家照常可以点地点选项（包括该地的资源交换按钮）。 */

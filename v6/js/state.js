@@ -40,6 +40,7 @@ export const state = {
      与 collectedItems 同样的口径：内部是 Set，进快照时转数组。
      注意它【要进存档】，而事件开关（game_events_enabled / game_event_hover）不进存档。 */
   triggeredEventIds: new Set(),
+  triggeredNegativeEvents: new Set(),   /* v1.9.0b3.1：已出现过的荒野负面遭遇（节点 id） */
   eventsEnabled: false,        /* 随机事件系统开关（从 localStorage 读，功能待实现） */
   gameOver: false,
   options: [],
@@ -151,6 +152,25 @@ export function clearTriggeredEvents() {
 /** 只读快照，供 UI / 测试查看（返回副本，外部改不到内部那份） */
 export function getTriggeredEventIds() {
   return new Set(state.triggeredEventIds);
+}
+
+/* ---------------- 已触发过的荒野负面遭遇（v1.9.0b3.1 改动 7/9） ----------------
+   荒野两条链的后半段各有一次「到达即弹窗」的强制二选一（见 map.js 的 NEGATIVE_EVENT_BY_NODE）。
+   它是 once 的：按【节点 id】记，触发过一次就不再出现（离开再回来也不弹）。
+   与上面的随机事件是两套东西：这里不进随机池、不受 /event 开关影响。 */
+
+export function isNegativeEventTriggered(nodeId) {
+  return state.triggeredNegativeEvents.has(String(nodeId));
+}
+
+/** 标记某个地点的负面遭遇已经出现过（由 main.js 在玩家选完选项之后调用） */
+export function markNegativeEventTriggered(nodeId) {
+  state.triggeredNegativeEvents.add(String(nodeId));
+}
+
+/** 只读快照，供 UI / 测试查看（返回副本） */
+export function getTriggeredNegativeEvents() {
+  return new Set(state.triggeredNegativeEvents);
 }
 
 /* ---------------- 体力 ---------------- */
@@ -417,6 +437,7 @@ export function toSnapshot() {
     /* v1.9.0b1.1：已触发过的事件 id（数组）。存档版本号不变（v4），
        但这是新增字段 —— 读档时缺失按空数组处理，不算无效存档（见 saveSystem.deserialize）。 */
     triggeredEventIds: [...state.triggeredEventIds],
+    triggeredNegativeEvents: [...state.triggeredNegativeEvents],
     usedOptions: persistent,           /* 只有非 perDay 的部分 */
     usedGroups: [...usedGroups].map(([id, set]) => [id, [...set]]),
   };
@@ -460,6 +481,8 @@ export function replaceFromSnapshot(data) {
   state.resolvedMustResolve = new Set(data.resolvedMustResolve || []);
   /* v1.9.0b1.1 新增字段，同样是「缺失就当空集」的可选兼容 */
   state.triggeredEventIds = new Set(data.triggeredEventIds || []);
+  /* v1.9.0b3.1：旧档没有这个字段 → 空集合（与 triggeredEventIds 同一套可选兼容） */
+  state.triggeredNegativeEvents = new Set(data.triggeredNegativeEvents || []);
   state.gameOver = false;
 
   usedOptions.clear();

@@ -20,7 +20,7 @@
  * 本模块不判断游戏规则，不操作终端。
  */
 
-import { SCENES, UI, EXCHANGES } from './texts.js';
+import { SCENES, UI, EXCHANGES, NEGATIVE_EVENTS } from './texts.js';
 import { DEFAULT_TRAVEL_COST, DISTANCE_TO_TIME_RATIO, SECONDARY_ROAD_PENALTY } from './config.js';
 import * as game from './state.js';
 import { formatDuration, formatClock } from './timeSystem.js';
@@ -95,13 +95,22 @@ export const NODES = {
   wallfoot: defNode('wallfoot', 350, 300, []),            /* 墙根：无任何交互 */
   wallgate: defNode('wallgate', 95, 170, []),             /* 共享：巨墙 ↔ 废城，也是巨墙的主安全屋 */
 
-  /* ---- 废城 wasteland（24 个 = 家 1 + 普通 19 + 接口 4） ---- */
+  /* ---- 废城 wasteland（24 个 = 家 1 + 普通 19 + 接口 4；v1.9.0b3.1 起 + 驿站 1 = 25） ---- */
   home: defNode('home', 95, 300, []),                     /* 唯一回电点，储物箱里有罐头 / 大衣 / 牛仔裤 + 日记 / README */
 
-  /* 四个接口（共享节点）：各自贴着自己那一侧的边框 */
-  northgate: defNode('northgate', 850, 50, []),           /* 北 → 荒野（占位，b3 落地） */
+  /* 四个接口（共享节点）：各自贴着自己那一侧的边框。
+     v1.9.0b3.1：北向接口从「北关」改成「驿站」，所以驿站要落在北缘的空位上
+     —— 北缘那一条已经排着 废弃加油站(185,85) / 旧医院(300,110) / 学校(470,145) /
+     图书馆(590,110) / 教堂(700,90) / 北关(850,50)，只有西段 x≈385 处与谁都拉得开 ≥100
+     （与学校 134、与医院 103），所以logic坐标为 (385,45)：贴顶边、又在北关西侧。 */
+  yizhan: defNode('yizhan', 385, 45, []),                 /* 北 → 荒野（v1.9.0b3.1：接口从北关改成驿站） */
   eastgate: defNode('eastgate', 930, 300, []),            /* 东 → 东海岸（占位，b2 落地） */
   southgate: defNode('southgate', 700, 560, []),          /* 南 → 工业区（占位，b2 落地） */
+
+  /* 北关：v1.9.0b3.1 起【不再是接口】，只是废城北缘的一个普通地点
+     （节点保留不删，旧存档里的访问记录/储物箱数据都还在，只是不再当安全屋用）。
+     它是通往荒野的最后一站：从教堂过来，再往北就是驿站。 */
+  northgate: defNode('northgate', 850, 50, []),
 
   /* 19 个普通地点 */
   plaza: defNode('plaza', 270, 300, []),
@@ -151,18 +160,27 @@ export const NODES = {
   observationdeck: defNode('observationdeck', 700, 180, []),
   coastalroad: defNode('coastalroad', 200, 200, []),
 
-  /* ---- 荒野 wilderness（v1.9.0b3 落地，7 个内部节点） ----
-     入口是共享节点 northgate（北关，坐标在废城那一组里：850,50 = 废城北缘）。
-     除了驿站，6 个内部节点全部 isDark —— 这是黑暗机制的第一批启用点：
+  /* ---- 荒野 wilderness（v1.9.0b3 落地；v1.9.0b3.1 延长成两条各 4 个地点的路径） ----
+     入口是共享节点【驿站 yizhan】—— 它的 defNode 写在上面废城那一段的「接口节点」组里
+     （一个节点只允许定义一次，与墙门 wallgate 的做法一致），荒野这一侧靠 REGION_VIEW_POS
+     把它画到南缘、朝废城。
+     除了驿站，内部 10 个节点全部 isDark —— 这是黑暗机制的第一批启用点：
      身处其中电量 2% + 1% = 3%/游戏小时，没电进不去，在里面掉到 0 会断电回家。
-     禁区 jinqu 还额外带一个「解锁前完全不渲染」的门槛（见 LOCKED_NODES）。 */
-  yizhan: defNode('yizhan', 500, 400, []),                            /* 驿站：荒野入口 + 主安全屋（不黑暗） */
-  xiaoshulin: defNode('xiaoshulin', 500, 260, [], false, true),       /* 小树林 */
-  senlin: defNode('senlin', 330, 190, [], false, true),               /* 森林 */
-  senlinshenchu: defNode('senlinshenchu', 200, 150, [], false, true), /* 森林深处（解锁门槛之一） */
-  jinqu: defNode('jinqu', 95, 60, ['goldenkey'], false, true),        /* 禁区：金钥匙放这儿 */
-  zhaoze: defNode('zhaoze', 760, 230, [], false, true),               /* 沼泽 */
-  zhaozeshenchu: defNode('zhaozeshenchu', 880, 110, [], false, true), /* 沼泽深处（解锁门槛之一） */
+     禁区 jinqu 还额外带一个「解锁前完全不渲染」的门槛（见 LOCKED_NODES），
+     并且同时连着森林深处与沼泽深处两条链。 */
+  xiaoshulin: defNode('xiaoshulin', 500, 400, [], false, true),       /* 小树林：两条路径的分叉点 */
+  /* 森林路径（4 个） */
+  senlin: defNode('senlin', 390, 300, [], false, true),               /* 森林 */
+  senlinshenchu: defNode('senlinshenchu', 270, 230, [], false, true), /* 森林深处（解锁门槛之一） */
+  senlinfudi: defNode('senlinfudi', 160, 160, [], false, true),       /* 森林腹地 */
+  heiansenlin: defNode('heiansenlin', 100, 80, [], false, true),      /* 黑暗森林 */
+  /* 沼泽路径（4 个） */
+  zhaoze: defNode('zhaoze', 640, 300, [], false, true),               /* 沼泽 */
+  zhaozeshenchu: defNode('zhaozeshenchu', 760, 230, [], false, true), /* 沼泽深处（解锁门槛之一） */
+  zhaozefudi: defNode('zhaozefudi', 870, 160, [], false, true),       /* 沼泽腹地 */
+  heianzhaoze: defNode('heianzhaoze', 930, 80, [], false, true),      /* 黑暗沼泽 */
+  /* 禁区：夹在两条链的深处之间，两边都连着 */
+  jinqu: defNode('jinqu', 520, 110, ['goldenkey'], false, true),      /* 禁区：金钥匙放这儿 */
 };
 
 /* ===============================================================
@@ -256,13 +274,45 @@ const EXCHANGE_BY_NODE = {
   observationdeck: 'x_e2i',
   dockgate: 'x_power',        /* 补：码头关（东海岸第 3 个时间 ↔ 资源） */
 
-  /* ---- 荒野：v1.9.0b3 改动 6 新分 ----
-     5 个无物品地点（小树林 / 森林 / 森林深处 / 沼泽 / 沼泽深处）→ 2 时间 + 1 资源 + 2 无交互。
-     两处「深处」是禁区门槛，刻意留空（无交互 → 到达时输出「这里什么都没有」）。 */
-  xiaoshulin: 'x_scav',       /* 小树林：时间 ↔ 资源（翻找 → 刷物资） */
+  /* ---- 荒野：v1.9.0b3.1 重新分配 ----
+     无物品地点 9 个（小树林 / 森林 / 森林深处 / 森林腹地 / 黑暗森林 / 沼泽 / 沼泽深处 / 沼泽腹地 /
+     黑暗沼泽；禁区有金钥匙、驿站是共享节点兼安全屋，都不计入）→ 4 时间 + 2 资源 + 3 无交互。
+     两条链的末端「黑暗系」节点留一个资源型交换：黑暗森林用 x_e2s（把照明开到最亮 → 换体力），
+     正好呼应那片地方伸手不见五指。 */
+  xiaoshulin: 'x_scav',       /* 小树林：时间 ↔ 资源（翻一翻 → 刷物资） */
   senlin: 'x_nap',            /* 森林：时间 ↔ 资源（靠着树睡一会儿 → 回体力） */
-  zhaoze: 'x_s2e',            /* 沼泽：资源 ↔ 资源（体力 -1 → 电量 +8） */
+  senlinshenchu: 'x_rest',    /* 森林深处：时间 ↔ 资源（坐下来歇一会儿 → 回体力） */
+  zhaoze: 'x_ration',         /* 沼泽：时间 ↔ 资源（坐下吃点东西 → 回体力，屏幕暗一点） */
+  heiansenlin: 'x_e2s',       /* 黑暗森林：资源 ↔ 资源（照明开亮 → 体力 +1） */
+  zhaozefudi: 'x_s2e',        /* 沼泽腹地：资源 ↔ 资源（快步走一段 → 电量 +8） */
+  /* 剩下三个（森林腹地 / 沼泽深处 / 黑暗沼泽）不挂交换 → 到达时输出「这里什么都没有」 */
 };
+
+/* ===============================================================
+   1.7 荒野的纯负面遭遇（v1.9.0b3.1 改动 7）
+   ---------------------------------------------------------------
+   荒野危险：两条链的后半段（森林深处 / 森林腹地 / 黑暗森林 / 沼泽深处 / 沼泽腹地 / 黑暗沼泽）
+   各挂一次「到达即弹窗」的强制二选一 —— 一个选项失体力、一个选项失时间，两个都不划算。
+   文案在 texts.js 的 NEGATIVE_EVENTS（键是遭遇 id），数值效果在 main.js 的 NEGATIVE_EFFECTS。
+   「已经触发过」由 state 的 triggeredNegativeEvents 记（节点 id 数组），进存档 ——
+   所以每个节点的遭遇只会出现一次，离开再回来不会再弹（见 saveSystem 的字段表）。
+   禁区不挂（它是解锁奖励节点），驿站 / 小树林 / 森林 / 沼泽也不挂（路径开头别太劝退）。
+   =============================================================== */
+const NEGATIVE_EVENT_BY_NODE = {
+  senlinshenchu: 'sinking_ground',    /* 森林深处 */
+  senlinfudi: 'thorns',               /* 森林腹地 */
+  heiansenlin: 'growl',               /* 黑暗森林 */
+  zhaozeshenchu: 'bog',               /* 沼泽深处 */
+  zhaozefudi: 'cold_water',           /* 沼泽腹地 */
+  heianzhaoze: 'lost_path',           /* 黑暗沼泽 */
+};
+
+for (const [nodeId, eventId] of Object.entries(NEGATIVE_EVENT_BY_NODE)) {
+  const node = NODES[nodeId];
+  const ev = NEGATIVE_EVENTS[eventId];
+  if (!node || !ev) continue;
+  node.negativeEvent = eventId;
+}
 
 /* 把交换挂成地点的选项：放在区域表之前，保证 NODES 建好就能用。
    按钮文案取自 texts.js 的 EXCHANGES[id].button（与弹窗描述呼应）；数值效果一律不写在这里。
@@ -316,12 +366,12 @@ export const REGIONS = {
     id: 'wasteland',
     name: '废城',
     type: 'region',
-    /* home + 19 个普通地点 + 4 个接口 */
-    nodes: ['home', 'wallgate', 'northgate', 'eastgate', 'southgate',
+    /* home + 19 个普通地点 + 4 个接口（v1.9.0b3.1 起北向接口是 yizhan，northgate 降级为普通地点） */
+    nodes: ['home', 'wallgate', 'yizhan', 'eastgate', 'southgate',
       'plaza', 'mall', 'station', 'park', 'school', 'library', 'church',
       'apartment', 'hospital', 'gasstation', 'subway', 'watertower',
       'sewer', 'factoryold', 'warehouse', 'substation',
-      'brokenbridge', 'dump', 'parking'],
+      'brokenbridge', 'dump', 'parking', 'northgate'],
     /* 主干道「比较复杂」：三条主向 + 两条副线 + 一条西向，含环路与分支。
        基准拓扑按需求逐条落地；park / mall / plaza 是枢纽，
        substation 与 parking 是南向的双入口。 */
@@ -362,6 +412,11 @@ export const REGIONS = {
          照抄会让它成为一个孤立节点（永远不可达、也不渲染）。
          这里按最小改动给它挂一条线：公寓 → 废弃加油站。 */
       { from: 'apartment', to: 'gasstation' },
+      /* v1.9.0b3.1 改动 1：北关不再是接口，荒野的入口改成驿站（共享节点）。
+         所以废城这一侧补一条「北关 → 驿站」——驿站虽然在 wilderness 的 nodes 里，
+         但它同时属于废城，这条边两端都在废城，画得出、走得通；
+         从废城看它就是北缘那一格（逻辑坐标 700,40）。 */
+      { from: 'northgate', to: 'yizhan' },
     ],
     mainRoads: [
       ['home', 'plaza'], ['plaza', 'mall'], ['mall', 'station'], ['station', 'eastgate'],
@@ -371,6 +426,7 @@ export const REGIONS = {
       ['home', 'sewer'], ['sewer', 'factoryold'], ['factoryold', 'warehouse'],
       ['warehouse', 'substation'], ['substation', 'southgate'],
       ['home', 'wallgate'],
+      ['northgate', 'yizhan'],
     ],
     neighbors: ['giantwall', 'wilderness', 'coast', 'industry'],
     primaryShelter: 'home',
@@ -379,36 +435,43 @@ export const REGIONS = {
 
   /* ================= 以下 3 个是占位（b4 落地） ================= */
 
+  /* ---- 荒野 wilderness（v1.9.0b3.1：11 个节点 = 共享接口驿站 + 10 个内部） ----
+     入口驿站贴南边（朝废城），内部两条链从「小树林」分叉向北延伸，
+     禁区夹在两条链的「深处」之间（改动 4：两个深处都连它）。 */
   wilderness: {
     id: 'wilderness',
     name: '荒野',
     type: 'region',
-    /* v1.9.0b3 落地：northgate 一个共享接口 + 7 个内部节点 = 8 */
-    nodes: ['northgate',
-      'yizhan', 'xiaoshulin', 'senlin', 'senlinshenchu', 'jinqu', 'zhaoze', 'zhaozeshenchu'],
-    /* 需求给的 8 条边，逐条落地（没有增删）：
-         北关 → 驿站 → 小树林 → 森林 → 森林深处 → 禁区
-                              ↘ 沼泽 → 沼泽深处
-         森林深处 ↔ 沼泽深处 是一条横穿的连线（把两条链收成一个环）。
-       mainRoads 只标两条主链（北关→驿站→小树林→森林→森林深处、小树林→沼泽→沼泽深处）；
-       另外两条（森林深处→禁区、森林深处↔沼泽深处）算支路，走它们要多花 1.4 倍时间。 */
+    /* 共享接口 yizhan + 10 个内部节点 = 11 */
+    nodes: ['yizhan',
+      'xiaoshulin', 'senlin', 'senlinshenchu', 'senlinfudi', 'heiansenlin',
+      'zhaoze', 'zhaozeshenchu', 'zhaozefudi', 'heianzhaoze', 'jinqu'],
+    /* 需求给的边逐条落地（v1.9.0b3.1；northgate → yizhan 那条属于废城那一侧，见 wasteland.edges）：
+         驿站 → 小树林 → 森林 → 森林深处 → 森林腹地 → 黑暗森林
+                       ↘ 沼泽 → 沼泽深处 → 沼泽腹地 → 黑暗沼泽
+         森林深处 → 禁区 ← 沼泽深处   （禁区两边都连）
+       mainRoads 只标两条主链；两条禁区边算支路（走它们要多花 1.4 倍时间）。 */
     edges: [
-      { from: 'northgate', to: 'yizhan' },
       { from: 'yizhan', to: 'xiaoshulin' },
       { from: 'xiaoshulin', to: 'senlin' },
       { from: 'senlin', to: 'senlinshenchu' },
-      { from: 'senlinshenchu', to: 'jinqu' },
+      { from: 'senlinshenchu', to: 'senlinfudi' },
+      { from: 'senlinfudi', to: 'heiansenlin' },
       { from: 'xiaoshulin', to: 'zhaoze' },
-      { from: 'senlinshenchu', to: 'zhaozeshenchu' },
       { from: 'zhaoze', to: 'zhaozeshenchu' },
+      { from: 'zhaozeshenchu', to: 'zhaozefudi' },
+      { from: 'zhaozefudi', to: 'heianzhaoze' },
+      { from: 'senlinshenchu', to: 'jinqu' },
+      { from: 'zhaozeshenchu', to: 'jinqu' },
     ],
     mainRoads: [
-      ['northgate', 'yizhan'], ['yizhan', 'xiaoshulin'], ['xiaoshulin', 'senlin'],
-      ['senlin', 'senlinshenchu'],
-      ['xiaoshulin', 'zhaoze'], ['zhaoze', 'zhaozeshenchu'],
+      ['yizhan', 'xiaoshulin'], ['xiaoshulin', 'senlin'], ['senlin', 'senlinshenchu'],
+      ['senlinshenchu', 'senlinfudi'], ['senlinfudi', 'heiansenlin'],
+      ['xiaoshulin', 'zhaoze'], ['zhaoze', 'zhaozeshenchu'], ['zhaozeshenchu', 'zhaozefudi'],
+      ['zhaozefudi', 'heianzhaoze'],
     ],
     neighbors: ['wasteland'],
-    primaryShelter: 'yizhan',           /* 驿站：安全屋（过夜 + 储物箱 + 值班日志） */
+    primaryShelter: 'yizhan',           /* 驿站：共享节点 + 主安全屋（过夜 + 储物箱 + 值班日志） */
     unlocked: false,
   },
 
@@ -892,8 +955,11 @@ const REGION_VIEW_POS = {
    v1.9.0b3：荒野在废城【北面】，所以共享节点 northgate 在荒野这一侧要贴【南】边
       （逻辑坐标 850,50 是它在废城那一侧的北缘，两个区域看到的必须是同一段文案、
        但方位要各自朝对面）。 */
+  /* v1.9.0b3.1 改动 1：荒野在废城【北面】，所以共享接口在两边要各贴各的边 ——
+      荒野这一侧看到的驿站贴【南】边（朝废城），废城这一侧它就用逻辑坐标 (700,40) 贴【北】边。
+      （北关降级为普通节点后不再需要覆盖：它只属于废城。） */
   wilderness: {
-    northgate: { x: 500, y: 540 },
+    yizhan: { x: 500, y: 540 },
   },
   industry: {
     southgate: { x: 500, y: 60 },
