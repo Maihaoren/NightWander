@@ -163,14 +163,14 @@ REGIONS.area2 = { id, name:'未知地域', entranceNode:'entrance', exitNode:nul
 | `runCommand` / `getAllCommandNames` | `debug.js` | `(input, state, ctx)` / `() => string[]` | `main.handleCommand`（`/` 分支）、`terminal` Tab 补全 |
 | `settleNight` / `onForceHome` / `ensureTimeOption` / `buildOptions` / `availableOptions` / `refreshButtons` | `main.js` | 见源码 | 夜间结算、强制回家、选项构造与渲染 |
 
-debug 指令当前实际支持（`getAllCommandNames()` 实测返回值，v1.9.0c）：`['time','day','stamina','staminaMax','battery','storage','unlockall','give','goto','area','event','version','help']`，另有 `/goto help` 与 `/event help`。其中 `/give {itemId} [数量]` 是 v1.9.0b4.1 新增（不看容量、不消耗资源，给钥匙会立刻算「拿到过」）；`/battery` 自 v1.9.0c 起按**当前电量上限**夹取（上限从装备推导）。
+debug 指令当前实际支持（`getAllCommandNames()` 实测返回值，v1.9.0）：`['time','day','stamina','staminaMax','battery','storage','unlockall','give','goto','area','event','version','help']`，另有 `/goto help` 与 `/event help`。其中 `/give {itemId} [数量]` 是 v1.9.0b4.1 新增（不看容量、不消耗资源，给钥匙会立刻算「拿到过」）；`/battery` 自 v1.9.0c 起按**当前电量上限**夹取（上限从装备推导）。
 
 ---
 
 ## 4. 关键约定与设计决策
 
 **存档与版本**
-- 存档版本常量 `VERSION` 在 `saveSystem.js`，**当前为 4**；游戏版本号在 `config.GAME_VERSION`，**当前 `v1.9.0c.1`**；两者独立递增（游戏版本升了但存档结构没变，`VERSION` 就不用动）。v1 / v2 存档不提供迁移，只提示「存档版本过旧，无法加载」。
+- 存档版本常量 `VERSION` 在 `saveSystem.js`，**当前为 4**；游戏版本号在 `config.GAME_VERSION`，**当前 `v1.9.0`**（第一个可玩完整版本）；两者独立递增（游戏版本升了但存档结构没变，`VERSION` 就不用动）。v1 / v2 存档不提供迁移，只提示「存档版本过旧，无法加载」。
 - **【用户要求】更新日志必须同步维护**：每次改 `GAME_VERSION`，都要在仓库根目录的 `CHANGELOG.md` 顶部新增一节（格式与分类约定见该文件开头），并按 `git tag -a vX.Y.Z` 打标签。只写已发生的事实，计划留在本文档。
 - 惯例：解析失败一律返回 `null`，由 `main` 打印 `存档无效`；导入前 `window.confirm` 确认，导入后必须「停旧定时器 → 替换 state → 重启定时器 → 重绘全部 UI」。
 
@@ -197,6 +197,16 @@ debug 指令当前实际支持（`getAllCommandNames()` 实测返回值，v1.9.0
   `state.setBattery()` 一律夹到该上限，`setEquippedSlot()` 与 `replaceFromSnapshot()` 末尾各夹一次，
   所以穿脱装备与读档都不会让电量超出上限。上限**不进存档**（实时推导）。
   只有 `torso / legs / back`（`WEAR_SLOTS`）算「穿戴」，手持槽不算。
+- **两个结束入口（v1.9.0 起统一）**：
+  1. 体力上限降到 `STAMINA_MIN`（1）→ `onForceHome('stamina')` 里 `setGameOver(true)` + 输出
+     `你再也走不动了。`（`UI.gameOverStamina`）。
+  2. 到达灯塔 → `checkLighthouseEnding()`：`setGameOver(true)` → 三行胜利叙事（`UI.lighthouseWin`，数组，
+     `terminal.logLines`）→ 通关画面（`setSceneArt(LIGHTHOUSE_WIN_ASCII)`，只在终局换上去）→
+     `游戏结束！`（`UI.gameOverLighthouse`）→ `time.stopClock()`。
+  两条都调 `lockDownAfterGameOver()`（地图 / 选项按钮 / 状态栏 / 物品栏四项重绘），
+  终端白名单（`/version` 与 `/help`，其余回 `游戏已结束。`）在 `handleCommand` 里共用；
+  **状态里只有一个 `gameOver` 字段**，没有结束原因字段，也没有「重新开始」入口（刷新页面重来）。
+  第三条路径（黑暗断电 `onBatteryCollapse()`）在体力上限本来就已经是 1 时复用同一句文案 —— 已知的措辞遗留。
 
 **被否决/替代的方案（有对话依据）**
 - 图片→ASCII：v6 规格明确「不使用图片转 ASCII」，`imageToAscii.js` 与 `pics/` 已从 v6 移除（素材仍在 `v5/pics`）。

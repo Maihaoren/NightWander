@@ -9,7 +9,7 @@ import {
   SHELTER_OVERNIGHT_COST_SEC, EVENTS_DEFAULT, EVENT_HOVER_SHOW_EFFECT,
   CHARGER_BATTERY_GAIN, CANNEDFOOD_STAMINA_GAIN,
 } from './config.js';
-import { UI, ITEMS, DOCUMENTS, EXCHANGES, NEGATIVE_EVENTS } from './texts.js';
+import { UI, ITEMS, DOCUMENTS, EXCHANGES, NEGATIVE_EVENTS, LIGHTHOUSE_WIN_ASCII } from './texts.js';
 import {
   initMap, refreshMap, setMapView, getNode, getNodes, getRegion, getNodeIds,
   isShelter, isAreaUnlocked, areasOfNode, sharedNodes, isAreaNeighbor,
@@ -1609,10 +1609,32 @@ function syncKeyLocks() {
 }
 
 /**
- * 灯塔终局（v1.9.0b4 改动 7 / v1.9.0b4.1 改动 7.6-7.7）：到达灯塔 → 输出终局文案 → gameOver。
- * 锁死范围与「体力归零 / 黑暗断电」两条结束路径完全一致（都由 isGameOver() 那套拦截
- * 加 handleCommand 的白名单负责），状态里只留一个 gameOver 字段（不再记结束原因）。
- * 输出只有一句「游戏结束！」，v1.9.0b4.1 起不再补胜利描述段落。
+ * 结束（gameOver）之后统一的那一套锁死刷新（v1.9.0 改动 2）。
+ *
+ * 两个结束入口（体力上限降到 1 / 到达灯塔）都调这一个函数，所以「地图点击、选项按钮、
+ * 状态栏、物品栏」四项的锁死表现逐项一致：
+ *   - 地图：重绘一次，节点 / 区域块 / 返回按钮的点击由各自入口的 isGameOver 拦截挡掉
+ *   - 选项按钮：refreshButtons() 拿到的 availableOptions() 在结束时返回空表
+ *   - 状态栏：时间已在调用前 stopClock() 停住，这里只重绘数值
+ *   - 物品栏：重绘（结束后物品栏仍然可以看，但不能用 —— useItem 开头也有 isGameOver 早退）
+ * 终端输入的白名单（只放行 /version 与 /help）在 handleCommand 里，两条路径共用。
+ */
+function lockDownAfterGameOver() {
+  refreshMap({ current: game.getCurrentNode() });
+  refreshButtons();
+  renderStatusBar();
+  renderInventory();
+}
+
+/**
+ * 灯塔终局（v1.9.0b4 改动 7 / v1.9.0 改动 1-2）：到达灯塔 → 胜利叙事 → 通关画面 → 游戏结束。
+ *
+ * 输出顺序（按需求逐条对应）：
+ *   a) 胜利叙事 UI.lighthouseWin（三行，呼应日记里「灯塔顶端有我要的解药」）
+ *   b) 通关画面 LIGHTHOUSE_WIN_ASCII（灯塔顶端的视角，只在这里换上去；节点本身的画不变）
+ *   c) UI.gameOverLighthouse「游戏结束！」
+ * 锁死范围与「体力上限降到 1」那条结束路径**逐项相同**，由 lockDownAfterGameOver() 统一负责；
+ * 状态里仍然只用一个 gameOver 字段（不新增字段、不记结束原因）。
  * 注意【不锁终端输入】—— 按需求结束后还允许输入 /version 与 /help，
  * 由 handleCommand 拦掉其它指令（提示「游戏已结束。」）。
  * @returns {boolean} 是否触发了终局
@@ -1622,11 +1644,11 @@ function checkLighthouseEnding(node) {
   if (game.isGameOver()) return false;
 
   game.setGameOver(true);
-  terminal.log(UI.gameOverLighthouse);               /* 游戏结束！（只此一句） */
+  terminal.logLines(UI.lighthouseWin);               /* a) 胜利叙事（一段一行） */
+  setSceneArt(LIGHTHOUSE_WIN_ASCII);                 /* b) 通关画面（灯塔顶端） */
+  terminal.log(UI.gameOverLighthouse);               /* c) 游戏结束！ */
   time.stopClock();                                  /* 状态栏时间停住 */
-  refreshButtons();                                  /* 选项按钮清空（availableOptions 在结束时返回 []） */
-  renderStatusBar();
-  renderInventory();
+  lockDownAfterGameOver();                           /* 与体力那条完全同一套刷新 */
   return true;
 }
 
@@ -1927,7 +1949,7 @@ async function onForceHome(reason) {
   if (game.getStaminaMax() <= STAMINA_MIN) {         /* 6 走不动了：先结算，再 gameOver */
     settleNight();                                   /* a) 天数 +1、时间归零、体力回满（回电看落点是不是 home） */
     game.setGameOver(true);                          /* b) 结束（v1.9.0b4.1 起不再记结束原因） */
-    terminal.log(UI.gameOverStamina);                /* c) "你已经精疲力尽，再也走不动了。游戏结束。" */
+    terminal.log(UI.gameOverStamina);                /* c) "你再也走不动了。"（v1.9.0 改动 2 的新文案） */
     time.stopClock();                                /* d) 停止时钟 */
     /* d2) v1.9.0b4：不再 setLocked(true) —— 结束后按需求还允许 /version 与 /help，
            其余指令由 handleCommand 的白名单拦掉（提示「游戏已结束。」）。 */
@@ -1948,10 +1970,8 @@ function redrawShelterQuietly() {
   if (!node) return;
   game.setOptions(buildOptions(node));
   setSceneArt(node.ascii);
-  refreshMap({ current: node.id });
-  refreshButtons();
-  renderStatusBar();
-  renderInventory();
+  /* v1.9.0 改动 2：末段的重绘换成两条结束路径共用的那一个（内容与原先逐项相同） */
+  lockDownAfterGameOver();
 }
 
 /**

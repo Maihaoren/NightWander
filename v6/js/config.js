@@ -60,5 +60,5 @@ export function readEventHoverEnabled() {
   return EVENT_HOVER_SHOW_EFFECT;
 }
 
-export const GAME_VERSION = 'v1.9.0c.1';   /* 游戏版本号 */
+export const GAME_VERSION = 'v1.9.0';   /* 游戏版本号 */
 export const DEBUG_CONSOLE = true;       /* 调试指令开关：true 时 "/" 开头的输入交给 js/debug.js */
