@@ -3,10 +3,19 @@
  * 只算“能不能、放到哪”，状态改动由 main.js 调 state.js 完成；不碰 DOM。
  */
 
+import { BATTERY_MAX } from './config.js';
+
 export const SLOTS = ['hand', 'torso', 'legs', 'back'];
 
 /** 会提供口袋格数的槽：手持槽不在其中（它只提供固定的保底 1 格） */
 export const POCKET_SLOTS = ['torso', 'legs', 'back'];
+
+/**
+ * 「穿戴在身上」的槽（v1.9.0c 改动 3）：与 POCKET_SLOTS 是同一组 ——
+ * 手持槽不算穿戴：它同时是保底物品栏，东西只是「拿在手里」，所以拿在手上的电容器
+ * 不提供电量上限加成，必须穿到背上才算（与「手上拎着一件大衣不给口袋格」同一套口径）。
+ */
+export const WEAR_SLOTS = POCKET_SLOTS;
 
 /** 手持槽固定提供的保底格数：与装备无关，单独计在口袋之外 */
 export const HAND_BASE_CAPACITY = 1;
@@ -50,6 +59,26 @@ export function getPocketSources(equipped, slotNames = {}) {
 /** 口袋里还有没有空位（只看口袋，不看手持保底槽） */
 export function hasPocketRoom(pocket, equipped) {
   return pocket.length < computeEquippedPockets(equipped);
+}
+
+/* ---------------- 电量上限（v1.9.0c 改动 3） ---------------- */
+
+/**
+ * 电量上限 = 基础值 BATTERY_MAX + 穿戴在身上的物品自带 batteryMaxBonus 之和。
+ *
+ * 与 computePocketCapacity 同一套口径：纯函数、只读传进来的 equipped，不碰 state。
+ * 当前只有电容器带这个属性（+25，背部装备），所以 100 → 125；它是背部装备，
+ * 遍历的是 WEAR_SLOTS（不含手持槽：拿在手里不算穿上），一个槽只有一件，天然不叠加。
+ * 状态侧的读取入口是 state.getBatteryMax()（main.js / debug 都走那一个）。
+ *
+ * @param {object} equipped 四个装备槽
+ * @returns {number} 当前电量上限（基础 100 + 穿戴加成）
+ */
+export function computeBatteryMax(equipped) {
+  return WEAR_SLOTS.reduce((sum, slot) => {
+    const item = equipped[slot];
+    return sum + ((item && item.batteryMaxBonus) || 0);
+  }, BATTERY_MAX);
 }
 
 /** 从储物箱取一件：能装备就装备，否则进袋，再否则进手持保底槽 */

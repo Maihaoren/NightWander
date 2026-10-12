@@ -141,9 +141,13 @@ function execute(input, state, ctx) {
       const bad = needNumber(); if (bad) return bad;
       const n = num();
       if (sub !== 'set' && sub !== 'add') return `参数错误。用法：${usage}`;
+      /* v1.9.0c：上限不再是常量 —— 先问 main 要当前上限（基础 100 + 装备加成），
+         拿不到才退回 config 里的基础值 BATTERY_MAX */
+      const cap = typeof ctx.batteryMax === 'function' ? ctx.batteryMax() : BATTERY_MAX;
       const before = sub === 'set' ? n : state.battery + n;
-      state.battery = clamp(before, 0, BATTERY_MAX);
-      return join(`电量为 ${Math.floor(state.battery)}。`, clampText(Math.floor(before), Math.floor(state.battery)));
+      state.battery = clamp(before, 0, cap);
+      return join(`电量为 ${Math.floor(state.battery)}/${Math.round(cap)}。`,
+        clampText(Math.floor(before), Math.floor(state.battery)));
     }
 
     case '/storage': {

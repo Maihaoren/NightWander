@@ -163,14 +163,14 @@ REGIONS.area2 = { id, name:'未知地域', entranceNode:'entrance', exitNode:nul
 | `runCommand` / `getAllCommandNames` | `debug.js` | `(input, state, ctx)` / `() => string[]` | `main.handleCommand`（`/` 分支）、`terminal` Tab 补全 |
 | `settleNight` / `onForceHome` / `ensureTimeOption` / `buildOptions` / `availableOptions` / `refreshButtons` | `main.js` | 见源码 | 夜间结算、强制回家、选项构造与渲染 |
 
-debug 指令当前实际支持（`getAllCommandNames()` 实测返回值，v1.9.0b4.1）：`['time','day','stamina','staminaMax','battery','storage','unlockall','give','goto','area','event','version','help']`，另有 `/goto help` 与 `/event help`。其中 `/give {itemId} [数量]` 是 v1.9.0b4.1 新增（不看容量、不消耗资源，给钥匙会立刻算「拿到过」）。
+debug 指令当前实际支持（`getAllCommandNames()` 实测返回值，v1.9.0c）：`['time','day','stamina','staminaMax','battery','storage','unlockall','give','goto','area','event','version','help']`，另有 `/goto help` 与 `/event help`。其中 `/give {itemId} [数量]` 是 v1.9.0b4.1 新增（不看容量、不消耗资源，给钥匙会立刻算「拿到过」）；`/battery` 自 v1.9.0c 起按**当前电量上限**夹取（上限从装备推导）。
 
 ---
 
 ## 4. 关键约定与设计决策
 
 **存档与版本**
-- 存档版本常量 `VERSION` 在 `saveSystem.js`，**当前为 4**；游戏版本号在 `config.GAME_VERSION`，**当前 `v1.9.0b4.1`**；两者独立递增（游戏版本升了但存档结构没变，`VERSION` 就不用动）。v1 / v2 存档不提供迁移，只提示「存档版本过旧，无法加载」。
+- 存档版本常量 `VERSION` 在 `saveSystem.js`，**当前为 4**；游戏版本号在 `config.GAME_VERSION`，**当前 `v1.9.0c`**；两者独立递增（游戏版本升了但存档结构没变，`VERSION` 就不用动）。v1 / v2 存档不提供迁移，只提示「存档版本过旧，无法加载」。
 - **【用户要求】更新日志必须同步维护**：每次改 `GAME_VERSION`，都要在仓库根目录的 `CHANGELOG.md` 顶部新增一节（格式与分类约定见该文件开头），并按 `git tag -a vX.Y.Z` 打标签。只写已发生的事实，计划留在本文档。
 - 惯例：解析失败一律返回 `null`，由 `main` 打印 `存档无效`；导入前 `window.confirm` 确认，导入后必须「停旧定时器 → 替换 state → 重启定时器 → 重绘全部 UI」。
 
@@ -188,6 +188,15 @@ debug 指令当前实际支持（`getAllCommandNames()` 实测返回值，v1.9.0
 - **地图可见性**：已访问 → 矩形+名称；未访问但可点 → 琥珀→**现为主题黑白**的菱形（无文字、无名称）；未访问且不可点 → 完全不渲染；边两端有任一端完全不渲染时该边也不画。
 - **按钮生命周期**：用过的一次性选项（非 repeatable、无 group）→ 从按钮行消失；`requires` 不满足 → 灰按钮 + `title=requiresHint` + 占编号（输入该编号输出 hint）；group 已被别的选项选过 → 灰按钮。编号按过滤后连续排列。
 - **存档不含**：图片缓存、定时器、深色模式、UI 状态（终端历史等）。`perDay` 已用项不进存档。
+- **物品使用（v1.9.0c）**：物品栏每一行右侧都有「使用」按钮（装备槽四个槽 + 口袋；储物箱与当地物品没有）。
+  效果集中写在 `main.js` 的 `ITEM_USES` 表里，出口只有 `useItem()`：充电器电量 +4、罐头体力 +1、
+  怀表 = 点怀表本身（同一个 `watchTimeAtInventory()`）；其余一律 `你不知道这个东西在这怎么用。`。
+  充电器与罐头**用掉一件**，满电 / 满体力时不消耗；使用不消耗时间 / 体力 / 电量。
+- **电量上限（v1.9.0c）**：上限 = `config.BATTERY_MAX`(100) + 穿戴槽物品的 `batteryMaxBonus`（电容器 +25），
+  算法在 `inventory.computeBatteryMax()`，唯一读取入口是 `state.getBatteryMax()`；
+  `state.setBattery()` 一律夹到该上限，`setEquippedSlot()` 与 `replaceFromSnapshot()` 末尾各夹一次，
+  所以穿脱装备与读档都不会让电量超出上限。上限**不进存档**（实时推导）。
+  只有 `torso / legs / back`（`WEAR_SLOTS`）算「穿戴」，手持槽不算。
 
 **被否决/替代的方案（有对话依据）**
 - 图片→ASCII：v6 规格明确「不使用图片转 ASCII」，`imageToAscii.js` 与 `pics/` 已从 v6 移除（素材仍在 `v5/pics`）。

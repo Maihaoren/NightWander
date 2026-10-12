@@ -4,14 +4,19 @@
 
 export const STAMINA_MAX_INIT = 10;      /* 初始体力上限 */
 export const STAMINA_MIN = 1;            /* 体力上限下限：降到这个值就 gameOver */
-export const BATTERY_MAX = 100;          /* 电量上限（也是每天在家节点过夜后的满电值）；不随时间衰减 */
-/* 电量流逝（只削当前电量，上限恒为 BATTERY_MAX）：
+export const BATTERY_MAX = 100;          /* 电量上限【基础值】（也是每天在家节点过夜后的基础满电值）；
+                                            v1.9.0c 起实际上限 = 这个基础值 + 装备提供的 batteryMaxBonus，
+                                            算法在 inventory.computeBatteryMax()，读取一律走 state.getBatteryMax() */
+/* 电量流逝（只削当前电量，上限见上）：
    自然流逝 BATTERY_NATURAL_DRAIN_PER_HOUR 游戏内每小时
    + 身处黑暗地点时叠加 BATTERY_DARK_AREA_EXTRA_DRAIN_PER_HOUR
    跨天（天数 +1）时一次性扣 BATTERY_DAY_CHANGE_DRAIN */
 export const BATTERY_NATURAL_DRAIN_PER_HOUR = 2;        /* 游戏内每小时自然流逝（百分点） */
 export const BATTERY_DARK_AREA_EXTRA_DRAIN_PER_HOUR = 1;/* 黑暗地点额外流逝，叠加在自然流逝上 */
 export const BATTERY_DAY_CHANGE_DRAIN = 5;              /* 跨天一次性扣除（百分点） */
+/* c 块：物品使用（使用效果的两个数值都放这里 —— 数值一律进 config 的约定） */
+export const CHARGER_BATTERY_GAIN = 4;                  /* 使用充电器：电量 +4 个百分点（加完 clamp 到电量上限） */
+export const CANNEDFOOD_STAMINA_GAIN = 1;               /* 使用罐头：体力 +1（加完不超过体力上限） */
 export const STORAGE_CAPACITY = 20;      /* 储物箱初始容量 */
 export const NIGHT_START_HOUR = 20;      /* 夜晚开始 20:00:00 */
 export const NIGHT_DURATION_SEC = 36000; /* 一夜 10 小时 = 36000 游戏秒（到 06:00:00） */
@@ -55,5 +60,5 @@ export function readEventHoverEnabled() {
   return EVENT_HOVER_SHOW_EFFECT;
 }
 
-export const GAME_VERSION = 'v1.9.0b4.1';   /* 游戏版本号 */
+export const GAME_VERSION = 'v1.9.0c';   /* 游戏版本号 */
 export const DEBUG_CONSOLE = true;       /* 调试指令开关：true 时 "/" 开头的输入交给 js/debug.js */

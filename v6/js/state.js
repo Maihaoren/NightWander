@@ -7,6 +7,9 @@
 
 import { STAMINA_MAX_INIT, BATTERY_MAX, STORAGE_CAPACITY, EVENTS_DEFAULT } from './config.js';
 import { ITEMS } from './texts.js';
+/* v1.9.0c：电量上限要从装备推导 —— 纯计算放 inventory.js（与口袋容量同一套口径），
+   这里只做「读上限 + 按上限夹取」，所以 state.js 依赖 inventory.js（后者不反向依赖 state.js） */
+import { computeBatteryMax } from './inventory.js';
 
 /**
  * 初始放在储物箱里的物品（v1.9.0b1 重定）。
@@ -227,12 +230,32 @@ export function setStaminaMax(value) {
 
 /* ---------------- 电量 ---------------- */
 
+/** 当前电量 */
 export function getBattery() {
   return state.battery;
 }
 
+/**
+ * 当前电量上限（v1.9.0c 改动 3）：基础 BATTERY_MAX + 装备槽里的 batteryMaxBonus 之和。
+ * 从装备实时推导，所以**不进存档**；换装（穿上 / 卸下电容器）之后上限立刻跟着变。
+ * 这是全项目读取电量上限的唯一入口（main.js 的结算 / 状态栏、debug 的 /battery 都走它）。
+ */
+export function getBatteryMax() {
+  return computeBatteryMax(state.equipped);
+}
+
+/**
+ * 按当前上限把现有电量夹回去（只降不升：上限变小时才会真的削到）。
+ * 调用点：setEquippedSlot()（穿脱 / 更换装备之后）与 replaceFromSnapshot()（读档之后）。
+ */
+export function clampBatteryToMax() {
+  state.battery = Math.max(0, Math.min(getBatteryMax(), state.battery));
+  return state.battery;
+}
+
+/** 设置电量：一律夹到 [0, 当前上限]（v1.9.0c 起上限是可变值，所有加电量操作都靠这里 clamp） */
 export function setBattery(value) {
-  state.battery = Math.max(0, Math.min(BATTERY_MAX, value));
+  state.battery = Math.max(0, Math.min(getBatteryMax(), value));
 }
 
 export function spendBattery(amount) {
@@ -410,6 +433,9 @@ export function removeFromStorage(shelterKey, item) {
 
 export function setEquippedSlot(slot, item) {
   state.equipped[slot] = item || null;
+  /* v1.9.0c 改动 3：装备会改变电量上限（电容器 +25），所以每一次换装之后都把电量夹回新上限。
+     穿上是「上限变大」→ 电量一个数都不动；卸下是「上限变小」→ 超出部分在这里被削掉。 */
+  clampBatteryToMax();
 }
 
 export function addToPocket(item) {
@@ -518,4 +544,9 @@ export function replaceFromSnapshot(data) {
   usedPerDay.clear();
   usedGroups.clear();
   for (const [id, list] of data.usedGroups) usedGroups.set(id, new Set(list));
+
+  /* v1.9.0c 改动 5：电量上限是从装备推导的、不进存档，
+     所以读档后可能「当前电量 > 重算出来的上限」（例如存档里电量 120、背上却没有电容器），
+     这里立刻按新上限夹一次；夹取本身不写任何新字段，存档版本号与兼容性都不用动。 */
+  clampBatteryToMax();
 }

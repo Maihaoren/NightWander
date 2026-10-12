@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b4.1` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0c` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `4` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -36,6 +36,110 @@
 （下一次开发从这里开始写。当前没有进行中的改动。）
 
 ---
+
+## [v1.9.0c] — 2026-10-11 —— 合并补丁：补齐剩余 41 张 ASCII（b3.2 收尾）+ c 块物品使用与电量上限
+
+**回档点 / git 标签**：`v1.9.0c`。这是用户点名的「v1.9.0b3.2 + c 合并补丁」：前半是 b3.2 欠的 41 张画，
+后半是 c 块的物品使用统一整理。版本号取 `v1.9.0c`（c 块首版；b3.2 的收尾搭这一版一起发）。
+
+> 存档结构版本号**不变（仍是 v4）**，字段表**仍然是 21 个键**：电量上限从装备实时推导、**不进存档**，
+> 所以这一版**没有新增任何存档字段**。读档时按重算出来的上限把当前电量夹一次（不写字段、不判无效）。
+
+### 新增
+
+- **第一部分（b3.2 收尾）：补齐剩余 41 张节点 ASCII**（`v6/js/texts.js`）
+  - 41 个节点、每张都是新画的：**废城 20 / 工业区 13 / 东海岸 8**（清单见下）。
+  - 写法与 b3.1 / b4 完全一致：各自一个 `const XXX_ASCII`，再由 `NODE_ASCII` 表挂到 `SCENES` 上；
+    合并逻辑只填 `ascii` 为空的节点，所以**已有的 24 张（家 + b3.1 的 17 + b4 的 6）一个字都没动**。
+  - 规则自检（每条都过）：纯 ASCII（0x20–0x7E）、≤63 列、≤12 行、深浅色共用一份；
+    65 张内容互不重复；`texts.js` 的改动是**纯新增 336 行、0 行删除**。
+  - **清单（节点 id → 中文名）**：
+    - 废城 20：`northgate` 北关 / `plaza` 废墟广场 / `mall` 商业街废墟 / `station` 废车站 /
+      `park` 街心公园 / `school` 学校废墟 / `library` 图书馆废墟 / `church` 教堂废墟 /
+      `apartment` 倒塌公寓 / `hospital` 旧医院 / `gasstation` 废弃加油站 / `subway` 地铁口 /
+      `watertower` 水塔 / `sewer` 下水道口 / `factoryold` 工厂旧址 / `warehouse` 旧仓库 /
+      `substation` 变电所 / `brokenbridge` 断桥 / `dump` 垃圾场 / `parking` 地下停车场
+    - 工业区 13：`freight` 货运站 / `steelmill` 炼钢炉 / `assembly` 装配车间 / `railway` 铁轨 /
+      `oiltank` 储油罐 / `chimney` 烟囱 / `coolingtower` 冷却塔 / `boilerroom` 锅炉房 /
+      `pipezone` 管道区 / `canteen` 职工食堂 / `lab` 化验室 / `materialyard` 材料场 / `wastewater` 废水池
+    - 东海岸 8：`coastalroad` 海岸公路 / `beach` 沙滩 / `breakwater` 防波堤 /
+      `observationdeck` 观景台 / `fishingvillage` 渔村 / `rockybeach` 岩石滩 /
+      `seacave` 海蚀洞 / `shipyard` 废弃船厂
+  - 结果：**65 / 65 个节点全部有画，缺画 0**（b3.2 那节里「还有 41 个地点没有画」的遗留到此清空）。
+
+### 变更
+
+- **第二部分 c1：物品使用 UI —— 物品栏每一行右侧都有「使用」按钮**（`v6/js/main.js`、`v6/js/texts.js`）
+  - 新增 `useExtra(item)`（造那个统一的小按钮）与 `useItem(item)`（唯一出口）。
+  - **挂了「使用」的行**：装备槽的四个槽位（含手持槽）、口袋里的每一件。
+  - **没有挂的行**（刻意划的边界）：`储物箱` 与 `当地物品` —— 前者还不是「在身上」（原入口是「取出」），
+    后者根本还不属于玩家。要用储物箱里的东西，先取出来再用。
+  - 空槽位不挂（那里没有物品）。
+- **第二部分 c2：可使用的三件**（同一处 `ITEM_USES` 表 + `v6/js/config.js` 的数值）
+  - `charger` 充电器 → 电量 `+4`（`CHARGER_BATTERY_GAIN`），加完由 `setBattery` 夹到当前上限。
+  - `cannedfood` 罐头 → 体力 `+1`（`CANNEDFOOD_STAMINA_GAIN`），加完不超过体力上限。
+  - `pocketwatch` 怀表 → 与「点击怀表本身」**完全同一个出口**（都调 `watchTimeAtInventory()`），
+    所以点「使用」与点怀表输出一模一样、**不会出现两句**；它是工具，用完留在原处。
+  - 其余（钥匙 / 电容器 / 挎包 / 大背包 / 大衣 / 牛仔裤 / 其它）都回
+    `你不知道这个东西在这怎么用。`（`UI.itemUnknownUse`，旧常量，这一版才真正接上入口）。
+  - **消耗口径（本版定的，需求未明说）**：充电器与罐头**用掉一件**（吃完 / 用完就没了，否则可以无限续航）；
+    怀表不消耗。**已经满了不消耗**：满电用充电器回「电量已经满了，用不着充电。」
+    （`UI.useChargerFull`）、满体力吃罐头回「你还一点都不饿。」（`UI.useCannedfoodFull`）——
+    这两句是本版新写的文案。
+  - 使用**不消耗时间 / 体力 / 电量**（只有效果本身 + 用掉那一件）；结束后（`gameOver`）点了不动。
+- **第二部分 c3：电量上限（`batteryMax`）概念**（`v6/js/inventory.js`、`v6/js/state.js`、`v6/js/main.js`）
+  - `inventory.computeBatteryMax(equipped)`（纯函数，与 `computePocketCapacity` 同一套口径）
+    = `config.BATTERY_MAX`（基础 100）+ 物品 `batteryMaxBonus` 之和；只统计**穿戴**的槽
+    （新增常量 `WEAR_SLOTS` = `torso / legs / back`，**手持槽不算穿戴** —— 手里拎着电容器不加上限，
+    与「手上拎着大衣不给口袋格」同一套口径）。
+  - `state.getBatteryMax()` 是**全项目读取上限的唯一入口**；`state.setBattery()` 改成夹到
+    `[0, getBatteryMax()]`，于是「任何加电量的操作都会 clamp」自动成立。
+  - 电容器 `batteryMaxBonus: 25`：穿上 → 上限 100 → 125、当前电量**一个数都不动**；
+    卸下 → 125 → 100、当前电量立刻夹到 100。
+  - 回电规则跟着换成当前上限：`settleNight()` 里家「回满」= 回满到 125，发电厂「+30%」= 125 × 30%。
+  - 状态栏：`UI.status.battery(cur, max)` → `电量 87/125%`（原来是 `电量 87%`）。
+- **第二部分 c5：存档结构不变**（`v6/js/state.js`，`v6/js/saveSystem.js` 一行未动）
+  - 上限从装备实时推导 → **不进存档**；字段表仍是 21 个键、`VERSION` 仍是 4、旧档照样能读。
+  - `replaceFromSnapshot()` 末尾新增一次 `clampBatteryToMax()`：读档后若「当前电量 > 重算上限」
+    （例如存档里电量 120、背上却没有电容器）立刻夹回去。
+  - 夹取挂在 `setEquippedSlot()` 上（`state.js` 里唯一的装备写入口），
+    所以穿 / 脱 / 更换装备三条路径都覆盖到，不需要在 main.js 各处补调用。
+- **debug**：`/battery set|add` 现在按**当前上限**夹取，输出也带上限（`电量为 100/125。`）；
+  上限由 `debugContext.batteryMax()` 提供，拿不到才退回 `config.BATTERY_MAX`。
+
+### 说明（本次重发需求里被这一版覆盖/确认的三条）
+
+- **改动 3 / 改动 5 修订（三锁与渡口：携带触发 + 永久保持）**：这两条已在 **v1.9.0b4.1** 落地
+  （`everHeldKeys` 一个字段、三锁与渡口共用、未解锁画成灰虚线不可点），本版只做回归，没有改动。
+- **改动 9 修订（存档新增 `everHeldKeys`、`gameOver` 复用）**：同上，已在 v1.9.0b4.1 落地。
+- 本版**新增字段 0 个**：c 块的电量上限走「实时推导」，不进存档。
+
+### 验证
+
+- 新增临时校验脚本 `.tools/nw_c_check.mjs`（本版两大部分，全部通过）：41 张画的清单 / 规则 /
+  去重 / 旧 24 张首行逐条比对 / 上屏验证；「使用」按钮的行覆盖与统一文案；三件可使用物品的效果、
+  消耗与满值守卫；钥匙与装备回「不知道怎么用」；怀表两条入口输出一致且不重复；
+  上限 100 ↔ 125 的穿脱与 clamp 时机、充电器在上限下的行为、家 / 发电厂过夜的当前上限；
+  存档 21 个键、上限不进档、读档 clamp、`/battery` 夹到当前上限。
+- 因版本号与「上限不再是常量」而同步更新的老套件：`nw_b22_check`（清空装备后再验基础上限的算式、
+  结算那行改判 `batteryMax * POWERPLANT_RECHARGE_RATIO`）、`nw_b2_check`（`batteryMaxBonus`
+  从「没被读取」改判「已被读取」）、`nw_b3_check` / `nw_b4_check` / `nw_b23_check` / `nw_b24_check` /
+  `nw_b41_check`（版本号）。
+- 走过的全量套件（全部通过）：`nw_c_check` / `nw_b41_check` / `nw_b4_check` / `nw_b3_check` /
+  `nw_b24_check` / `nw_b23_check` / `nw_b22_check` / `nw_b21b_check` / `nw_b2_check` / `nw_b11_check` /
+  `nw_b1_check` / `nw_r13_check` / `nw_r14_check` / `nw_boot_check` / `nw_ver_check`。
+
+### 已知限制 / 遗留
+
+- **「使用」按钮只在「在身上」的两处**（装备槽 / 口袋）：储物箱与当地物品的行没有这个按钮
+  （原因见 c1 那条）。若希望储物箱里也能「使用」，那是另一个决定（要先取出来再消耗）。
+- **消耗口径是我定的**：充电器与罐头用掉一件。若希望充电器可以反复用（不消耗），
+  改 `main.js` 的 `ITEM_USES.charger.consume = false` 一处即可。
+- 使用**不消耗游戏时间**（需求只说了不消耗时间/体力/电量是「不可使用的物品」的要求，
+  可使用的那两件没提时间）；现在两件都是「瞬间完成」。
+- 满电 / 满体力时**不消耗**物品（新加的两句文案 `useChargerFull` / `useCannedfoodFull`）。
+- 电量上限目前只有电容器一个来源（+25）；`WEAR_SLOTS` 里多件带 `batteryMaxBonus` 的装备会相加，
+  但同一槽位只穿一件，所以不会出现「同一件算两次」。
 
 ## [v1.9.0b4.1] — 2026-10-11 —— 重发的 b4 需求：锁改成「看得见、点不动」+ 永久解锁改记钥匙 id + /give + 移动耗时再 ×1.5
 

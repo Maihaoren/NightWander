@@ -7,6 +7,7 @@
 import {
   STAMINA_MIN, BATTERY_MAX, FORCE_HOME_PENALTY, MOVE_STAMINA_COST, TICK_INTERVAL_MS, DEBUG_CONSOLE,
   SHELTER_OVERNIGHT_COST_SEC, EVENTS_DEFAULT, EVENT_HOVER_SHOW_EFFECT,
+  CHARGER_BATTERY_GAIN, CANNEDFOOD_STAMINA_GAIN,
 } from './config.js';
 import { UI, ITEMS, DOCUMENTS, EXCHANGES, NEGATIVE_EVENTS } from './texts.js';
 import {
@@ -150,7 +151,7 @@ function renderStatusBar() {
 
   day.textContent = UI.status.day(game.getDay());
   stamina.textContent = UI.status.stamina(Math.max(0, game.getStamina()), game.getStaminaMax());
-  battery.textContent = UI.status.battery(game.getBattery());
+  battery.textContent = UI.status.battery(game.getBattery(), game.getBatteryMax());
   clock.textContent = UI.status.time(time.getTimeString());
 }
 
@@ -215,6 +216,18 @@ function carriedItemRow(label, { onClick, disabled, hint, onDrop, dropHint, extr
     row.append(btn);
   }
   return row;
+}
+
+/**
+ * 「使用」小按钮（v1.9.0c）：物品栏每一行都挂这一个，形状完全一致。
+ * 不可使用的物品照样有这个按钮，点了由 useItem() 回一句「你不知道这个东西在这怎么用。」。
+ */
+function useExtra(item) {
+  return {
+    text: UI.useItem,
+    hint: UI.useHint(item.name),
+    onClick: () => useItem(item),
+  };
 }
 
 function section(title, nodes) {
@@ -283,18 +296,22 @@ function renderInventory() {
 
     if (slot === 'hand') {
       /* v1.9.0b2.1 改动 4：手持槽里的怀表 —— 点它看时间，右侧给「收回口袋」（野外还有「丢弃」）。
-         其它物品行为完全不变。 */
+         其它物品行为完全不变。
+         v1.9.0c：右侧再补一个「使用」—— 与点怀表本身完全等价（都走 watchTimeAtInventory）。 */
       if (isPocketwatch(item)) {
         return carriedItemRow(label, {
           onClick: () => watchTimeAtInventory(),
           hint: '点击看当前时间；右侧按钮把它收回口袋',
           onDrop: (atHome && item) ? null : (item ? () => dropItemToNode(item) : null),
           dropHint: item ? UI.dropHint(item.name) : '',
-          extras: item ? [{
-            text: '收回口袋',
-            hint: `把${item.name}收回口袋`,
-            onClick: () => handToPocket(),
-          }] : [],
+          extras: item ? [
+            useExtra(item),
+            {
+              text: '收回口袋',
+              hint: `把${item.name}收回口袋`,
+              onClick: () => handToPocket(),
+            },
+          ] : [],
         });
       }
       return carriedItemRow(label, {
@@ -306,19 +323,32 @@ function renderInventory() {
         /* 手持槽里的东西也是随身物品，野外同样能丢（丢完这一格就空出来了） */
         onDrop: (atHome && item) ? null : (item ? () => dropItemToNode(item) : null),
         dropHint: item ? UI.dropHint(item.name) : '',
-        /* v1.9.0b2.2 改动 3：手持槽里拿着装备时也能直接穿上（野外不用回安全屋） */
-        extras: inventory.canEquip(item) ? [{
-          text: UI.equipAction,
-          hint: UI.equipHint(item.name),
-          onClick: () => equipFromCarried(item, 'hand'),
-        }] : [],
+        /* v1.9.0b2.2 改动 3：手持槽里拿着装备时也能直接穿上（野外不用回安全屋）。
+           v1.9.0c：「使用」排在最前（每件随身物品都有），装备入口跟在后面。 */
+        extras: item ? [
+          useExtra(item),
+          ...(inventory.canEquip(item) ? [{
+            text: UI.equipAction,
+            hint: UI.equipHint(item.name),
+            onClick: () => equipFromCarried(item, 'hand'),
+          }] : []),
+        ] : [],
       });
     }
-    if (!atHome) return itemButton(label, { onClick: () => inspectItem(item), disabled: !item });
-    return itemButton(label, {
+    /* v1.9.0c：穿在身上的四件也照样给「使用」按钮（视觉一致；它们都不可使用，
+       点了统一回 UI.itemUnknownUse）。空槽位不加 —— 那里没有物品。 */
+    if (!atHome) {
+      return carriedItemRow(label, {
+        onClick: () => inspectItem(item),
+        disabled: !item,
+        extras: item ? [useExtra(item)] : [],
+      });
+    }
+    return carriedItemRow(label, {
       onClick: () => unequip(slot),
       disabled: !item,
       hint: item && item.pockets ? `提供 ${item.pockets} 个口袋格` : '',
+      extras: item ? [useExtra(item)] : [],
     });
   })));
 
@@ -394,7 +424,8 @@ function renderInventory() {
   }
 
   /* 口袋：每件 —— 安全屋点一下放回储物箱（整理模式，行为不变）；
-     野外点一下是收进手持槽（原行为），右侧额外给一个「丢弃」入口 */
+     野外点一下是收进手持槽（原行为），右侧额外给一个「丢弃」入口。
+     v1.9.0c：右侧最前面再挂一个「使用」（每件随身物品都有，位置统一）。 */
   el.appendChild(section(UI.inventory.pocket, pocket.map((item) => carriedItemRow(item.name, {
     onClick: isPocketwatch(item)
       ? () => watchTimeAtInventory()
@@ -405,6 +436,7 @@ function renderInventory() {
     onDrop: atHome ? null : () => dropItemToNode(item),
     dropHint: UI.dropHint(item.name),
     extras: [
+      useExtra(item),
       /* v1.9.0b2.2 改动 3：口袋里的装备可以直接穿上（野外与在家都行；脱下仍只在安全屋） */
       ...(inventory.canEquip(item) ? [{
         text: UI.equipAction,
@@ -686,7 +718,7 @@ function lookAtTime(kind) {
      - 电量归零时时间本身是 ??:??:??，这时不打时间，改说「看不清了」
    这是「物品使用」的雏形，c 块会把使用逻辑统一整理；本块只做怀表这一件。 */
 function isPocketwatch(item) {
-  return Boolean(item) && item.id === 'pocketwatch';
+  return Boolean(item) && item.id === POCKETWATCH_ID;
 }
 
 /** 点物品栏 / 手持槽里的怀表：终端输出当前时间 */
@@ -697,6 +729,74 @@ function watchTimeAtInventory() {
     return;
   }
   terminal.log(UI.watchTime(time.getTimeString()));
+}
+
+/* ===============================================================
+   c 块（v1.9.0c）：物品使用入口
+   ---------------------------------------------------------------
+   物品栏每一行右侧都有「使用」按钮（不可使用的物品也有，保持视觉一致）。
+   判定与效果集中在这张表里，出口只有一个 useItem()：
+     blocked() —— 现在用不了的原因（返回文案就【不消耗】、不生效）
+     run()     —— 生效（只改状态；输出由 run 自己打，比如怀表）
+     text()    —— 生效后的输出（与 run 二选一）
+     consume   —— 用完是否吃掉这一件（默认 true；怀表是工具，不动它）
+   不消耗时间 / 体力 / 电量：使用只动（物品本身 + 它自己的效果）。
+   =============================================================== */
+
+/** 口径：只有带效果的物品能用；其余（钥匙 / 装备 / 杂物）走 UI.itemUnknownUse 那一句 */
+const POCKETWATCH_ID = 'pocketwatch';
+
+const ITEM_USES = {
+  /* 充电器：电量 +4 个百分点，加完由 setBattery 夹到【当前上限】（电容器装上后是 125） */
+  charger: {
+    blocked: () => (game.getBattery() >= game.getBatteryMax() ? UI.useChargerFull : null),
+    run: () => game.setBattery(game.getBattery() + CHARGER_BATTERY_GAIN),
+    text: () => UI.useCharger,
+  },
+  /* 罐头：体力 +1，加完不超过体力上限（setStamina 自带夹取） */
+  cannedfood: {
+    blocked: () => (game.getStamina() >= game.getStaminaMax() ? UI.useCannedfoodFull : null),
+    run: () => game.setStamina(game.getStamina() + CANNEDFOOD_STAMINA_GAIN),
+    text: () => UI.useCannedfood,
+  },
+  /* 怀表：与「点怀表本身」完全同一个出口（都走 watchTimeAtInventory），所以不会出现两句输出；
+     它是工具不是消耗品，用完留在原处。 */
+  pocketwatch: {
+    blocked: () => null,
+    run: () => watchTimeAtInventory(),
+    consume: false,
+  },
+};
+
+/** 用掉随身的一件（口袋里的删掉；手持槽里的把那一格清空）—— 判定复用 inventory.planDrop */
+function consumeCarried(item) {
+  const plan = inventory.planDrop(item, game.getEquipped(), game.getPocket());
+  if (plan.where === 'hand') game.setEquippedSlot('hand', null);
+  else if (plan.where === 'pocket') game.removeFromPocket(item);
+}
+
+/**
+ * 使用一件随身物品（物品栏各行的「使用」按钮都走这里）。
+ * 顺序：游戏结束 → 没有效果（回「不知道怎么用」）→ 现在用不了（回原因，不消耗）
+ *       → 生效 + 消耗 + 输出 → 立刻刷新状态栏与物品栏（状态变化即时可见）。
+ */
+function useItem(item) {
+  if (!item || game.isGameOver()) return;
+  const use = ITEM_USES[item.id];
+  if (!use) {
+    terminal.log(UI.itemUnknownUse);                  /* 钥匙 / 装备 / 其它：不消耗任何东西 */
+    return;
+  }
+  const blocked = use.blocked();
+  if (blocked) {
+    terminal.log(blocked);                            /* 满电 / 满体力：留着这一件 */
+    return;
+  }
+  if (use.consume !== false) consumeCarried(item);
+  use.run();
+  if (typeof use.text === 'function') terminal.log(use.text());
+  renderStatusBar();
+  renderInventory();
 }
 
 function defaultHandler(option) {
@@ -1948,14 +2048,15 @@ function settleNight() {
   game.setElapsedSeconds(0);             /* 2 */
   game.setStamina(game.getStaminaMax()); /* 3 */
   /* 4 回电：按节点判断，与区域无关（家在「废城」，发电厂在「工业区」）。
-       v1.9.0b2.2 改动 5：上限取 BATTERY_MAX（当前恒为 100；等 c 块把「电量上限」做成
-       可变值之后，这里要换成读那个上限接口）。setBattery 自带的 [0, 上限] 夹取
-       正好实现「加完 clamp 到上限」。 */
+       v1.9.0b2.2 改动 5 把这条规则改回来；v1.9.0c 改动 3-4 起上限不再是常量 BATTERY_MAX，
+       而是【当前上限】（＝基础 100 + 装备加成，电容器 +25），一律走 game.getBatteryMax()；
+       setBattery 自带的 [0, 上限] 夹取正好实现「加完 clamp 到上限」。 */
   const hereNode = game.getCurrentNode();
+  const batteryMax = game.getBatteryMax();
   if (hereNode === RECHARGE_NODE) {
-    game.setBattery(BATTERY_MAX);
+    game.setBattery(batteryMax);
   } else if (hereNode === POWERPLANT_ID) {
-    game.setBattery(game.getBattery() + BATTERY_MAX * POWERPLANT_RECHARGE_RATIO);
+    game.setBattery(game.getBattery() + batteryMax * POWERPLANT_RECHARGE_RATIO);
   }
   game.clearPerDayOptions();             /* 5 清空 perDay 已用项 */
   time.resetClock();                     /* 时间回到 20:00:00 */
@@ -2067,6 +2168,8 @@ const debugContext = {
     return true;
   },
   redrawStatusBar: renderStatusBar,
+  /** /battery 用（v1.9.0c）：当前电量上限（基础 100 + 装备加成），debug 侧的 clamp 走它 */
+  batteryMax: () => game.getBatteryMax(),
   /* /event 走真正的开关接口（state.setEventsEnabled 会一并写 localStorage），
      并把事件池 id 列表回给 debug.js 显示，便于确认事件系统已生效 */
   setEventsEnabled: (value) => game.setEventsEnabled(value),
