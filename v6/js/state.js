@@ -41,6 +41,8 @@ export const state = {
      注意它【要进存档】，而事件开关（game_events_enabled / game_event_hover）不进存档。 */
   triggeredEventIds: new Set(),
   triggeredNegativeEvents: new Set(),   /* v1.9.0b3.1：已出现过的荒野负面遭遇（节点 id） */
+  unlockedLocks: new Set(),             /* v1.9.0b4：已经开过的码头三把锁（节点 id；解锁永久保持） */
+  gameOverReason: '',                   /* v1.9.0b4：结束原因（'' | 'stamina' | 'battery' | 'lighthouse'） */
   eventsEnabled: false,        /* 随机事件系统开关（从 localStorage 读，功能待实现） */
   gameOver: false,
   options: [],
@@ -173,6 +175,24 @@ export function getTriggeredNegativeEvents() {
   return new Set(state.triggeredNegativeEvents);
 }
 
+/* ---------------- 已经开过的锁（v1.9.0b4 改动 3） ----------------
+   码头三把锁「解锁一次永久保持」：拿到钥匙那一刻记下来，之后就算把钥匙丢了也不会重新锁上。
+   「有没有钥匙」本身可以从背包推导，但「解锁过」不能 —— 所以这个 Set 进存档。 */
+
+export function isLockUnlocked(nodeId) {
+  return state.unlockedLocks.has(String(nodeId));
+}
+
+/** 标记某个锁已经开过（由 main.js 在「随身带着钥匙」时调用） */
+export function markLockUnlocked(nodeId) {
+  state.unlockedLocks.add(String(nodeId));
+}
+
+/** 只读快照，供 UI / 测试查看（返回副本） */
+export function getUnlockedLocks() {
+  return new Set(state.unlockedLocks);
+}
+
 /* ---------------- 体力 ---------------- */
 
 export function getStamina() {
@@ -244,8 +264,11 @@ export function isGameOver() {
   return state.gameOver;
 }
 
-export function setGameOver(value) {
+export function setGameOver(value, reason = '') {
   state.gameOver = Boolean(value);
+  /* v1.9.0b4：顺便记下为什么结束（体力归零 / 断电 / 灯塔通关）。
+     value 为 false 时把原因一并清掉，避免读档后残留。 */
+  state.gameOverReason = state.gameOver ? String(reason || state.gameOverReason || '') : '';
 }
 
 /* ---------------- 当前选项列表 ---------------- */
@@ -438,6 +461,9 @@ export function toSnapshot() {
        但这是新增字段 —— 读档时缺失按空数组处理，不算无效存档（见 saveSystem.deserialize）。 */
     triggeredEventIds: [...state.triggeredEventIds],
     triggeredNegativeEvents: [...state.triggeredNegativeEvents],
+    unlockedLocks: [...state.unlockedLocks],       /* v1.9.0b4 */
+    gameOver: Boolean(state.gameOver),             /* v1.9.0b4：结束状态（体力归零 / 断电 / 灯塔通关） */
+    gameOverReason: String(state.gameOverReason || ''),
     usedOptions: persistent,           /* 只有非 perDay 的部分 */
     usedGroups: [...usedGroups].map(([id, set]) => [id, [...set]]),
   };
@@ -483,7 +509,10 @@ export function replaceFromSnapshot(data) {
   state.triggeredEventIds = new Set(data.triggeredEventIds || []);
   /* v1.9.0b3.1：旧档没有这个字段 → 空集合（与 triggeredEventIds 同一套可选兼容） */
   state.triggeredNegativeEvents = new Set(data.triggeredNegativeEvents || []);
-  state.gameOver = false;
+  /* v1.9.0b4：旧档没有这三个字段 → 没开过锁、没结束（与上面同一套可选兼容） */
+  state.unlockedLocks = new Set(data.unlockedLocks || []);
+  state.gameOver = Boolean(data.gameOver);
+  state.gameOverReason = String(data.gameOverReason || '');
 
   usedOptions.clear();
   for (const [id, list] of Object.entries(data.usedOptions)) usedOptions.set(id, new Set(list));

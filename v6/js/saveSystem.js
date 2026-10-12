@@ -31,7 +31,12 @@ const REQUIRED = ['day', 'elapsedSeconds', 'currentArea', 'mapView', 'currentNod
   /* v1.9.0b3.1 新增：已出现过的【荒野负面遭遇】所在节点 id（改动 7 的 once 标记）。
      与 triggeredEventIds 同一套可选兼容：列进 REQUIRED、缺失时补空数组，
      所以 v4 的旧档照样能读，版本号不动。 */
-  'triggeredNegativeEvents'];
+  'triggeredNegativeEvents',
+  /* v1.9.0b4 新增三个字段（同样「缺失补默认值」，所以 v4 旧档照样能读、版本号不动）：
+     unlockedLocks    —— 已经开过的码头三把锁（节点 id 数组；解锁永久保持）
+     gameOver         —— 是否已经结束（体力归零 / 黑暗断电 / 灯塔通关）
+     gameOverReason   —— 结束原因：'' | 'stamina' | 'battery' | 'lighthouse' */
+  'unlockedLocks', 'gameOver', 'gameOverReason'];
 
 /** 快照 → 存档字符串（Base64） */
 export function serialize(snapshot) {
@@ -69,7 +74,16 @@ export function deserialize(text) {
       data.triggeredNegativeEvents = [];
     }
 
+    /* 【v1.9.0b4 可选兼容】unlockedLocks / gameOver / gameOverReason 三个字段同理：
+       旧档没有它们 → 补成「没开过锁、没结束」，不判无效存档。 */
+    if (data.unlockedLocks === undefined || data.unlockedLocks === null) data.unlockedLocks = [];
+    if (data.gameOver === undefined || data.gameOver === null) data.gameOver = false;
+    if (data.gameOverReason === undefined || data.gameOverReason === null) data.gameOverReason = '';
+
     if (!REQUIRED.every((key) => data[key] !== undefined && data[key] !== null)) return null;
+    if (!Array.isArray(data.unlockedLocks)) return null;
+    if (typeof data.gameOver !== 'boolean') return null;
+    if (typeof data.gameOverReason !== 'string') return null;
     if (!Array.isArray(data.triggeredEventIds)) return null;
     if (!Array.isArray(data.triggeredNegativeEvents)) return null;
     if (!Array.isArray(data.pocket)) return null;

@@ -112,26 +112,34 @@ export const NODES = {
      它是通往荒野的最后一站：从教堂过来，再往北就是驿站。 */
   northgate: defNode('northgate', 850, 50, []),
 
-  /* 19 个普通地点 */
+  /* 20 个普通地点（v1.9.0b3.1 起北关降级进来，所以是 20 个）
+     v1.9.0b4 改动 1：补上最初需求里漏掉的物品 —— 充电器 ×4 / 罐头 ×3 / 挎包 ×2 / 铜小钥匙 ×1，
+     从这 20 个里挑 10 个铺开（断桥仍然只放怀表，不重复占）：
+       充电器：废弃加油站 / 倒塌公寓 / 学校废墟 / 地下停车场（都是「有电的地方」）
+       罐头：  旧仓库 / 商业街废墟 / 工厂旧址（仓储与厂房最合理）
+       挎包：  旧医院 / 废车站（东西多、需要装东西）
+       铜小钥匙：水塔（东侧、通往东关与码头那一头）
+     剩下 10 个（广场 / 断桥 / 下水道口 / 图书馆 / 教堂 / 地铁口 / 街心公园 / 变电所 / 垃圾场 /
+     北关）不带物品 —— 按 b3 的规则分资源交换或「这里什么都没有」。 */
   plaza: defNode('plaza', 270, 300, []),
-  apartment: defNode('apartment', 200, 215, []),
-  gasstation: defNode('gasstation', 185, 85, []),
-  hospital: defNode('hospital', 300, 110, []),
-  brokenbridge: defNode('brokenbridge', 395, 395, ['pocketwatch']),  /* 怀表放在这里（本块只落地放置点） */
+  apartment: defNode('apartment', 200, 215, ['charger']),
+  gasstation: defNode('gasstation', 185, 85, ['charger']),
+  hospital: defNode('hospital', 300, 110, ['bag']),
+  brokenbridge: defNode('brokenbridge', 395, 395, ['pocketwatch']),  /* 怀表放在这里（b1 已落地） */
   sewer: defNode('sewer', 195, 420, []),
-  station: defNode('station', 700, 300, []),
-  school: defNode('school', 470, 145, []),
+  station: defNode('station', 700, 300, ['bag']),
+  school: defNode('school', 470, 145, ['charger']),
   library: defNode('library', 590, 110, []),
   church: defNode('church', 700, 90, []),
-  factoryold: defNode('factoryold', 270, 505, []),
-  warehouse: defNode('warehouse', 420, 545, []),
+  factoryold: defNode('factoryold', 270, 505, ['cannedfood']),
+  warehouse: defNode('warehouse', 420, 545, ['cannedfood']),
   subway: defNode('subway', 620, 230, []),
   park: defNode('park', 370, 205, []),
-  parking: defNode('parking', 690, 425, []),
-  watertower: defNode('watertower', 790, 215, []),
+  parking: defNode('parking', 690, 425, ['charger']),
+  watertower: defNode('watertower', 790, 215, ['copperkey']),
   substation: defNode('substation', 540, 520, []),
   dump: defNode('dump', 520, 400, []),
-  mall: defNode('mall', 470, 300, []),
+  mall: defNode('mall', 470, 300, ['cannedfood']),
 
   /* ---- 工业区 industry（v1.9.0b2 落地，15 个） ---- */
   powerplant: defNode('powerplant', 500, 540, []),         /* 共享：工业区 ↔ 孤岛；在这里过夜会充一部分电 */
@@ -159,6 +167,19 @@ export const NODES = {
   shipyard: defNode('shipyard', 720, 440, ['charger']),
   observationdeck: defNode('observationdeck', 700, 180, []),
   coastalroad: defNode('coastalroad', 200, 200, []),
+
+  /* ---- 码头 dock（v1.9.0b4 落地，4 个内部节点） ----
+     一条自西向东的单链：码头关贴西边（朝东海岸），往东依次是三道锁，最东端是灯塔。
+     三把锁的门槛写在 KEY_GATES 里：只有【随身带着】对应钥匙才会渲染出来。 */
+  copperlock: defNode('copperlock', 250, 300, []),     /* 铜锁：需要铜小钥匙 */
+  ironlock: defNode('ironlock', 450, 300, []),         /* 铁锁：需要铁钥匙 */
+  goldenlock: defNode('goldenlock', 650, 300, []),     /* 金锁：需要金钥匙 */
+  lighthouse: defNode('lighthouse', 880, 300, []),     /* 灯塔：游戏终点 */
+
+  /* ---- 孤岛 island（v1.9.0b4 落地，2 个内部节点） ----
+     自北向南的单链：发电厂贴北边（朝工业区），往南是渡口与海之家。 */
+  ferry: defNode('ferry', 500, 300, []),               /* 渡口：需要渡口钥匙才能进去 */
+  seahouse: defNode('seahouse', 500, 500, ['bigpack']),/* 海之家：大背包放这儿 */
 
   /* ---- 荒野 wilderness（v1.9.0b3 落地；v1.9.0b3.1 延长成两条各 4 个地点的路径） ----
      入口是共享节点【驿站 yizhan】—— 它的 defNode 写在上面废城那一段的「接口节点」组里
@@ -203,13 +224,76 @@ const LOCKED_NODES = {
 /** 该节点是否已经解锁（没有门槛的节点恒为 true） */
 export function isNodeUnlocked(nodeId) {
   const need = LOCKED_NODES[nodeId];
-  if (!need) return true;
-  return need.every((id) => isNodeVisited(id));
+  if (need) return need.every((id) => isNodeVisited(id));      /* 禁区：到过两处「深处」 */
+  if (KEY_LOCKS[nodeId]) return isKeyGateOpen(nodeId);        /* 三把锁：随身带着对应钥匙（或已解锁过） */
+  return true;
 }
 
 /** 还没解锁的节点 id 列表 —— main.js 用它比较「这一趟有没有新解锁了什么」 */
 export function lockedNodeIds() {
   return Object.keys(LOCKED_NODES).filter((id) => !isNodeUnlocked(id));
+}
+
+/* ===============================================================
+   1.65 钥匙门槛（v1.9.0b4 改动 3 / 5）
+   ---------------------------------------------------------------
+   码头那三把锁 + 孤岛的渡口，各自需要一把钥匙。判定口径按需求：
+     「背包里有」= 钥匙在【口袋 / 手持槽 / 装备槽】里；**放储物箱里不算**（要取出来）。
+   两类门槛的行为不同：
+     三把锁（copperlock / ironlock / goldenlock）—— 未满足时【完全不渲染】（同禁区那套），
+       满足后按机制 A 渲染；解锁过一次就永久保持（记在 state.unlockedLocks 里），
+       所以拿到钥匙之后再把钥匙丢掉也不会重新锁上。
+     渡口（ferry）—— 照常渲染（相邻发电厂时是菱形），只有「想走进去」那一步被拦，
+       由 main.js 输出「渡口的铁闸锁着。需要渡口钥匙。」（悬浮提示同一句）。
+   =============================================================== */
+/* 三把锁：未解锁时【完全不渲染】（和禁区那道门槛同一套），靠着随身带着钥匙解锁、记进 unlockedLocks */
+const KEY_LOCKS = {
+  copperlock: 'copperkey',     /* 铜锁：铜小钥匙（废城，v1.9.0b4 改动 1 补落） */
+  ironlock: 'ironkey',         /* 铁锁：铁钥匙（工业区铁轨，b2 已落地） */
+  goldenlock: 'goldenkey',     /* 金锁：金钥匙（荒野禁区，b3 已落地） */
+};
+/* 只拦「走进去」这一下的门槛：节点照常渲染，点了不给走 */
+const MOVE_GATES = {
+  ferry: 'ferrykey',           /* 渡口：渡口钥匙（东海岸海蚀洞，b2 已落地） */
+};
+const KEY_GATES = { ...KEY_LOCKS, ...MOVE_GATES };
+
+/** 这个节点需要哪把钥匙（没有门槛返回 null） */
+export function keyGateOf(nodeId) {
+  return KEY_GATES[nodeId] || null;
+}
+
+/** 钥匙是不是【随身带着】（口袋 / 手持槽 / 装备槽；储物箱里不算） */
+export function carriesKey(itemId) {
+  if (!itemId) return false;
+  if (game.getPocket().some((item) => item && item.id === itemId)) return true;
+  return Object.values(game.getEquipped()).some((item) => item && item.id === itemId);
+}
+
+/**
+ * 门槛是否已经过了：随身带着钥匙，或者这个节点早就解锁过
+ *（只有三把锁会被记进 unlockedLocks；渡口每次都要现场带着钥匙）。
+ */
+export function isKeyGateOpen(nodeId) {
+  const key = KEY_GATES[nodeId];
+  if (!key) return true;
+  if (carriesKey(key)) return true;
+  return Boolean(game.isLockUnlocked && game.isLockUnlocked(nodeId));
+}
+
+/** 缺哪把钥匙（门槛已过返回 null）—— main.js 用它决定拦不拦这次移动 */
+export function missingKeyFor(nodeId) {
+  return isKeyGateOpen(nodeId) ? null : (KEY_GATES[nodeId] || null);
+}
+
+/** 三把锁的 id 清单（不判断状态）—— main.js 的 syncKeyLocks 用它逐个登记解锁 */
+export function keyLockNodeIds() {
+  return Object.keys(KEY_LOCKS);
+}
+
+/** 还没解锁的三把锁（渡口不算：它不靠解锁、每次都现场验钥匙） */
+export function keyLockedNodeIds() {
+  return Object.keys(KEY_LOCKS).filter((id) => !isKeyGateOpen(id));
 }
 
 /* ===============================================================
@@ -238,23 +322,27 @@ export function lockedNodeIds() {
    「已用过」状态直接落在既有的 usedOptions 里，存档格式一个字都不用改。
    =============================================================== */
 const EXCHANGE_BY_NODE = {
-  /* ---- 废城：时间 ↔ 资源 ×9 ---- */
-  home: 'x_rest',              /* 家 */
+  /* ---- 废城（v1.9.0b4 改动 1 后重算）----
+     有物品的 11 个节点（10 个补落物品 + 断桥的怀表）一律不挂交换，
+     所以无物品地点从 24 个降到 14 个：25 节点 - 11 个有物品 = 14。
+     按 2/5、1/5、2/5 重新分配：14 × 2/5 = 5.6 → 6 时间、14 × 1/5 = 2.8 → 3 资源、
+     14 × 2/5 = 5.6 → 5 无交互（允许 ±1 浮动）。
+     沿用原来的落点，只把「因为有了物品而退出」的那几个换掉。 */
+  /* 时间 ↔ 资源 ×6 */
+  home: 'x_rest',              /* 家（安全屋） */
   plaza: 'x_rest',            /* 废墟广场 */
-  apartment: 'x_nap',         /* 倒塌公寓 */
-  hospital: 'x_scav',         /* 旧医院 */
-  station: 'x_nap',           /* 废车站 */
-  school: 'x_cell',           /* 学校废墟 */
   library: 'x_scav',          /* 图书馆废墟 */
   church: 'x_rest',           /* 教堂废墟 */
-  watertower: 'x_power',      /* 水塔 */
+  sewer: 'x_nap',             /* 下水道口 */
+  substation: 'x_cell',       /* 变电所（拆电气件正好） */
 
-  /* ---- 废城：资源 ↔ 资源 ×5 ---- */
-  wallgate: 'x_s2e',          /* 墙门 */
+  /* 资源 ↔ 资源 ×3 */
+  wallgate: 'x_s2e',          /* 墙门（接口安全屋） */
   subway: 'x_e2s',            /* 地铁口 */
   park: 'x_e2i',              /* 街心公园 */
-  dump: 'x_s2i',              /* 垃圾场 */
-  mall: 'x_e2i',              /* 商业街废墟 */
+
+  /* 无交互 ×5：驿站 / 东关 / 南关（三个接口安全屋）、北关、垃圾场
+     → 到达时输出「这里什么都没有」 */
 
   /* ---- 工业区：b2 已分的 5 个 + 本次补的 1 个 ----
      补的是【发电厂】而不是【南关】：南关同时属于废城，给它挂交换会让废城的
@@ -563,12 +651,24 @@ export const REGIONS = {
     id: 'dock',
     name: '码头',
     type: 'region',
-    placeholder: true,
-    nodes: ['dockgate'],                /* v1.9.0b2：接上东海岸的接口；内部节点等 b4 */
-    edges: [],
-    mainRoads: [],
+    /* v1.9.0b4 落地：dockgate 一个共享接口 + 4 个内部节点 = 5 */
+    nodes: ['dockgate', 'copperlock', 'ironlock', 'goldenlock', 'lighthouse'],
+    /* 单链：码头关 → 铜锁 → 铁锁 → 金锁 → 灯塔。
+       三把锁各自的「钥匙门槛」写在 KEY_GATES 里（持有钥匙才会解锁渲染）。 */
+    edges: [
+      { from: 'dockgate', to: 'copperlock' },
+      { from: 'copperlock', to: 'ironlock' },
+      { from: 'ironlock', to: 'goldenlock' },
+      { from: 'goldenlock', to: 'lighthouse' },
+    ],
+    mainRoads: [
+      ['dockgate', 'copperlock'], ['copperlock', 'ironlock'],
+      ['ironlock', 'goldenlock'], ['goldenlock', 'lighthouse'],
+    ],
     neighbors: ['coast'],
-    primaryShelter: null,
+    /* 码头没有自己的安全屋：码头关本身就是共享节点（自动进安全屋并集），
+       这里把 primaryShelter 指向它，只是为了 forceHomeTarget 的兜底路径有个合理落点。 */
+    primaryShelter: 'dockgate',
     unlocked: false,
   },
 
@@ -576,12 +676,20 @@ export const REGIONS = {
     id: 'island',
     name: '孤岛',
     type: 'region',
-    placeholder: true,
-    nodes: ['powerplant'],              /* v1.9.0b2：接上工业区的接口；内部节点等 b4 */
-    edges: [],
-    mainRoads: [],
+    /* v1.9.0b4 落地：powerplant 一个共享接口 + 2 个内部节点 = 3 */
+    nodes: ['powerplant', 'ferry', 'seahouse'],
+    /* 单链：发电厂 → 渡口 → 海之家。
+       渡口不是「不渲染」，而是「渲染出来但点了不给走」—— 需要渡口钥匙（见 KEY_GATES）。 */
+    edges: [
+      { from: 'powerplant', to: 'ferry' },
+      { from: 'ferry', to: 'seahouse' },
+    ],
+    mainRoads: [
+      ['powerplant', 'ferry'], ['ferry', 'seahouse'],
+    ],
     neighbors: ['industry'],
-    primaryShelter: null,
+    /* 同理：孤岛没有自己的安全屋，发电厂是共享节点 */
+    primaryShelter: 'powerplant',
     unlocked: false,
   },
 };
@@ -1293,6 +1401,9 @@ function placeTip(el, event) {
 function buildTipLines(toId, regionId) {
   /* 黑暗地点 + 没电 → 专门那句「进不去」，要排在通用那句之前 */
   if (isNodeBlockedByDarkness(toId)) return [UI.tipDarkBlocked];
+  /* v1.9.0b4 改动 5：钥匙门槛没过（渡口）→ 悬浮提示与点击时的拒绝理由同一句。
+     放在没电那句之后：没电时连耗时都预测不了，先说明没电。 */
+  if (missingKeyFor(toId)) return [UI.ferryLocked];
   if (game.getBattery() <= 0) return [UI.tipNoBattery];         /* 没电：连耗时也预测不了 */
 
   const from = currentNode;
