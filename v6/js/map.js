@@ -1634,16 +1634,18 @@ function renderArea(regionId) {
      所以既不显示名字（不泄露没走过的地图），又明显区别于可点的琥珀菱形。
      v1.9.0b3 改动 3：还带一个解锁门槛 —— 未解锁的节点（禁区）完全不渲染、不可点，
      解锁条件满足后自动回到下面这套常规判定（当前节点自己例外，免得人站在上面却看不见自己）。 */
-  /* v1.9.0b4.1 改动 3（接上一条）：三把锁（KEY_LOCKS）没钥匙时不再隐藏，
-     而是伪装成「已访问 + 不可达」的灰虚线（is-blocked）—— 玩家看得见那里有一把锁、
-     知道过不去，但既不能点、也不显示额外信息（与其它 blocked 节点完全同一套样式）。 */
+  /* v1.9.0b4.1 改动 3 / v1.9.0c 改动 5 修订（接上一条）：钥匙门槛没开时不再隐藏，
+     而是伪装成「已访问 + 不可达」的灰虚线（is-blocked）—— 三把锁与渡口都是这一套画法；
+     区别只在「点了说什么」：渡口由 main.js 输出「渡口的铁闸锁着。需要渡口钥匙。」，三把锁静默。 */
   const stateOf = (id) => {
     /* 未解锁：连形态都不给（机制 A 之外的门槛）。三把锁是唯一例外，见下面那一条 */
     if (id !== here && !isNodeUnlocked(id) && !KEY_LOCKS[id]) return null;
     if (!inSight(id)) return null;                      /* 没电被隐藏：不可点，也没有悬浮提示 */
     if (here && id === here) return 'current';          /* 当前位置：有标识，不参与可点性判断 */
-    /* v1.9.0b4.1 改动 3：三把锁还没开 → 一律画成「已访问 + 不可达」的灰虚线假象 */
-    if (id !== here && KEY_LOCKS[id] && !isKeyGateOpen(id)) return 'blocked';
+    /* 三把锁 + 渡口：门槛没开时统一画成「已访问 + 不可达」的灰虚线假象（改动 3 / 改动 5 修订）。
+       渡口依旧保留「点了给一句原因」的行为，只是那句输出在 main.js 的 travelTo 里 ——
+       这个分支只管画法，不管可点性；两件事互不影响。 */
+    if (id !== here && keyGateOf(id) && !isKeyGateOpen(id)) return 'blocked';
     if (isNodeBlockedByDarkness(id)) return 'darkblock';
     if (visited.has(id)) return reachable.has(id) ? 'visited' : 'blocked';
     /* 【正式机制 A】未访问：只有与当前节点直接相邻才显示菱形；没有当前节点时退回旧规则 */
