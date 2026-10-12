@@ -41,8 +41,11 @@ export const state = {
      注意它【要进存档】，而事件开关（game_events_enabled / game_event_hover）不进存档。 */
   triggeredEventIds: new Set(),
   triggeredNegativeEvents: new Set(),   /* v1.9.0b3.1：已出现过的荒野负面遭遇（节点 id） */
-  unlockedLocks: new Set(),             /* v1.9.0b4：已经开过的码头三把锁（节点 id；解锁永久保持） */
-  gameOverReason: '',                   /* v1.9.0b4：结束原因（'' | 'stamina' | 'battery' | 'lighthouse'） */
+  /* v1.9.0b4.1 改动 3.4 / 9：已经【拿到过】的钥匙 id（不是锁的节点 id）。
+     锁的「永久解锁」由它推导：拿到过某把钥匙 → 对应的门槛永远算已开，
+     所以之后把钥匙丢掉（或放进储物箱）也不会重新锁上。
+     存钥匙 id 而不是锁节点 id，是因为「拿到过」这件事发生在钥匙身上。 */
+  everHeldKeys: new Set(),
   eventsEnabled: false,        /* 随机事件系统开关（从 localStorage 读，功能待实现） */
   gameOver: false,
   options: [],
@@ -175,22 +178,23 @@ export function getTriggeredNegativeEvents() {
   return new Set(state.triggeredNegativeEvents);
 }
 
-/* ---------------- 已经开过的锁（v1.9.0b4 改动 3） ----------------
-   码头三把锁「解锁一次永久保持」：拿到钥匙那一刻记下来，之后就算把钥匙丢了也不会重新锁上。
-   「有没有钥匙」本身可以从背包推导，但「解锁过」不能 —— 所以这个 Set 进存档。 */
+/* ---------------- 拿到过的钥匙（v1.9.0b4.1 改动 3.4 / 9） ----------------
+   码头三把锁 + 渡口「门槛开过一次就永久开着」：拿到钥匙那一刻把【钥匙 id】记下来，
+   之后就算把钥匙丢了也不会重新锁上。
+   「现在有没有钥匙」本身可以从背包推导，但「拿到过」不能 —— 所以这个 Set 进存档。 */
 
-export function isLockUnlocked(nodeId) {
-  return state.unlockedLocks.has(String(nodeId));
+export function hasHeldKey(keyId) {
+  return state.everHeldKeys.has(String(keyId));
 }
 
-/** 标记某个锁已经开过（由 main.js 在「随身带着钥匙」时调用） */
-export function markLockUnlocked(nodeId) {
-  state.unlockedLocks.add(String(nodeId));
+/** 标记某把钥匙已经【拿到过】（由 main.js 在「随身带着」时调用） */
+export function markKeyHeld(keyId) {
+  state.everHeldKeys.add(String(keyId));
 }
 
 /** 只读快照，供 UI / 测试查看（返回副本） */
-export function getUnlockedLocks() {
-  return new Set(state.unlockedLocks);
+export function getEverHeldKeys() {
+  return new Set(state.everHeldKeys);
 }
 
 /* ---------------- 体力 ---------------- */
@@ -264,11 +268,8 @@ export function isGameOver() {
   return state.gameOver;
 }
 
-export function setGameOver(value, reason = '') {
+export function setGameOver(value) {
   state.gameOver = Boolean(value);
-  /* v1.9.0b4：顺便记下为什么结束（体力归零 / 断电 / 灯塔通关）。
-     value 为 false 时把原因一并清掉，避免读档后残留。 */
-  state.gameOverReason = state.gameOver ? String(reason || state.gameOverReason || '') : '';
 }
 
 /* ---------------- 当前选项列表 ---------------- */
@@ -461,9 +462,8 @@ export function toSnapshot() {
        但这是新增字段 —— 读档时缺失按空数组处理，不算无效存档（见 saveSystem.deserialize）。 */
     triggeredEventIds: [...state.triggeredEventIds],
     triggeredNegativeEvents: [...state.triggeredNegativeEvents],
-    unlockedLocks: [...state.unlockedLocks],       /* v1.9.0b4 */
+    everHeldKeys: [...state.everHeldKeys],         /* v1.9.0b4.1：拿到过的钥匙 id */
     gameOver: Boolean(state.gameOver),             /* v1.9.0b4：结束状态（体力归零 / 断电 / 灯塔通关） */
-    gameOverReason: String(state.gameOverReason || ''),
     usedOptions: persistent,           /* 只有非 perDay 的部分 */
     usedGroups: [...usedGroups].map(([id, set]) => [id, [...set]]),
   };
@@ -509,10 +509,9 @@ export function replaceFromSnapshot(data) {
   state.triggeredEventIds = new Set(data.triggeredEventIds || []);
   /* v1.9.0b3.1：旧档没有这个字段 → 空集合（与 triggeredEventIds 同一套可选兼容） */
   state.triggeredNegativeEvents = new Set(data.triggeredNegativeEvents || []);
-  /* v1.9.0b4：旧档没有这三个字段 → 没开过锁、没结束（与上面同一套可选兼容） */
-  state.unlockedLocks = new Set(data.unlockedLocks || []);
+  /* v1.9.0b4.1：旧档没有这个字段 → 没拿到过任何钥匙、没结束（与上面同一套可选兼容） */
+  state.everHeldKeys = new Set(data.everHeldKeys || []);
   state.gameOver = Boolean(data.gameOver);
-  state.gameOverReason = String(data.gameOverReason || '');
 
   usedOptions.clear();
   for (const [id, list] of Object.entries(data.usedOptions)) usedOptions.set(id, new Set(list));

@@ -163,14 +163,14 @@ REGIONS.area2 = { id, name:'未知地域', entranceNode:'entrance', exitNode:nul
 | `runCommand` / `getAllCommandNames` | `debug.js` | `(input, state, ctx)` / `() => string[]` | `main.handleCommand`（`/` 分支）、`terminal` Tab 补全 |
 | `settleNight` / `onForceHome` / `ensureTimeOption` / `buildOptions` / `availableOptions` / `refreshButtons` | `main.js` | 见源码 | 夜间结算、强制回家、选项构造与渲染 |
 
-debug 指令当前实际支持（`getAllCommandNames()` 实测返回值）：`['time','day','stamina','staminaMax','battery','storage','goto','event','version','help']`，另有 `/goto help`。**没有** `/area`（需求新增，未实现）。
+debug 指令当前实际支持（`getAllCommandNames()` 实测返回值，v1.9.0b4.1）：`['time','day','stamina','staminaMax','battery','storage','unlockall','give','goto','area','event','version','help']`，另有 `/goto help` 与 `/event help`。其中 `/give {itemId} [数量]` 是 v1.9.0b4.1 新增（不看容量、不消耗资源，给钥匙会立刻算「拿到过」）。
 
 ---
 
 ## 4. 关键约定与设计决策
 
 **存档与版本**
-- 存档版本常量 `VERSION` 在 `saveSystem.js`，**当前为 4**；游戏版本号在 `config.GAME_VERSION`，**当前 `v1.9.0b4`**；两者独立递增（游戏版本升了但存档结构没变，`VERSION` 就不用动）。v1 / v2 存档不提供迁移，只提示「存档版本过旧，无法加载」。
+- 存档版本常量 `VERSION` 在 `saveSystem.js`，**当前为 4**；游戏版本号在 `config.GAME_VERSION`，**当前 `v1.9.0b4.1`**；两者独立递增（游戏版本升了但存档结构没变，`VERSION` 就不用动）。v1 / v2 存档不提供迁移，只提示「存档版本过旧，无法加载」。
 - **【用户要求】更新日志必须同步维护**：每次改 `GAME_VERSION`，都要在仓库根目录的 `CHANGELOG.md` 顶部新增一节（格式与分类约定见该文件开头），并按 `git tag -a vX.Y.Z` 打标签。只写已发生的事实，计划留在本文档。
 - 惯例：解析失败一律返回 `null`，由 `main` 打印 `存档无效`；导入前 `window.confirm` 确认，导入后必须「停旧定时器 → 替换 state → 重启定时器 → 重绘全部 UI」。
 

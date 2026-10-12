@@ -16,15 +16,16 @@ export const STORAGE_CAPACITY = 20;      /* 储物箱初始容量 */
 export const NIGHT_START_HOUR = 20;      /* 夜晚开始 20:00:00 */
 export const NIGHT_DURATION_SEC = 36000; /* 一夜 10 小时 = 36000 游戏秒（到 06:00:00） */
 export const TIME_SPEED = 1;             /* 1 游戏秒 = 1 现实秒（测试可调到 60） */
-export const DEFAULT_TRAVEL_COST = 1350; /* 未定义边的默认移动耗时（22.5 分钟；v1.9.0b1.1 起 ×1.5） */
+export const DEFAULT_TRAVEL_COST = 2025; /* 未定义边的默认移动耗时（33.75 分钟；v1.9.0b1.1 起 ×1.5，v1.9.0b4.1 再 ×1.5） */
 export const FORCE_HOME_PENALTY = 1;     /* 强制回家：体力上限 -1 */
 export const MOVE_STAMINA_COST = 1;      /* 每次移动消耗体力 */
 export const TICK_INTERVAL_MS = 250;     /* 时间刷新频率（毫秒） */
 /* 距离(逻辑单位)转秒数的系数 —— 这就是「移动基础耗时」那一个分量：
    边的耗时 = 距离 × 本系数 ×（支路再乘 SECONDARY_ROAD_PENALTY）。
    v1.9.0b1.1：3.0 → 4.5，也就是所有移动耗时统一 ×1.5（主路与支路一起放大）。
+   v1.9.0b4.1：4.5 → 6.75，再统一 ×1.5 —— 相对最早的 3.0 累计 ×2.25。
    ±10% 的随机抖动（map.js 的 MOVE_JITTER）与「预览/实际共用同一个随机值」的机制都没动。 */
-export const DISTANCE_TO_TIME_RATIO = 4.5;
+export const DISTANCE_TO_TIME_RATIO = 6.75;
 export const SECONDARY_ROAD_PENALTY = 1.4; /* 支路时间惩罚系数 */
 export const CROSS_REGION_COST_SEC = 3600;   /* 跨区域移动耗时（1 小时） */
 export const SHELTER_OVERNIGHT_COST_SEC = 0; /* 安全屋「过夜」耗时（0 = 立刻进入下一天） */
@@ -54,5 +55,5 @@ export function readEventHoverEnabled() {
   return EVENT_HOVER_SHOW_EFFECT;
 }
 
-export const GAME_VERSION = 'v1.9.0b4';   /* 游戏版本号 */
+export const GAME_VERSION = 'v1.9.0b4.1';   /* 游戏版本号 */
 export const DEBUG_CONSOLE = true;       /* 调试指令开关：true 时 "/" 开头的输入交给 js/debug.js */

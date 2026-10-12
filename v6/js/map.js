@@ -240,13 +240,14 @@ export function lockedNodeIds() {
    码头那三把锁 + 孤岛的渡口，各自需要一把钥匙。判定口径按需求：
      「背包里有」= 钥匙在【口袋 / 手持槽 / 装备槽】里；**放储物箱里不算**（要取出来）。
    两类门槛的行为不同：
-     三把锁（copperlock / ironlock / goldenlock）—— 未满足时【完全不渲染】（同禁区那套），
-       满足后按机制 A 渲染；解锁过一次就永久保持（记在 state.unlockedLocks 里），
-       所以拿到钥匙之后再把钥匙丢掉也不会重新锁上。
+     三把锁（copperlock / ironlock / goldenlock）—— 未满足时【渲染成「已访问 + 不可达」】
+       （v1.9.0b4.1 改动 3：灰色 + 虚线的假象，看得见、点不动），满足后按机制 A 渲染；
+       解锁过一次就永久保持（记在 state.everHeldKeys 里，见下），所以拿到钥匙之后再把钥匙丢掉
+       也不会重新锁上。
      渡口（ferry）—— 照常渲染（相邻发电厂时是菱形），只有「想走进去」那一步被拦，
        由 main.js 输出「渡口的铁闸锁着。需要渡口钥匙。」（悬浮提示同一句）。
    =============================================================== */
-/* 三把锁：未解锁时【完全不渲染】（和禁区那道门槛同一套），靠着随身带着钥匙解锁、记进 unlockedLocks */
+/* 三把锁：未解锁时按「已访问 + 不可达」的灰虚线渲染（看得见，但不可点） */
 const KEY_LOCKS = {
   copperlock: 'copperkey',     /* 铜锁：铜小钥匙（废城，v1.9.0b4 改动 1 补落） */
   ironlock: 'ironkey',         /* 铁锁：铁钥匙（工业区铁轨，b2 已落地） */
@@ -271,14 +272,14 @@ export function carriesKey(itemId) {
 }
 
 /**
- * 门槛是否已经过了：随身带着钥匙，或者这个节点早就解锁过
- *（只有三把锁会被记进 unlockedLocks；渡口每次都要现场带着钥匙）。
+ * 门槛是否已经过了：随身带着钥匙，或者【这把钥匙曾经拿到过】
+ *（v1.9.0b4.1 改动 3.4 / 9：永久解锁记的是【钥匙 id】，不是锁的节点 id）。
  */
 export function isKeyGateOpen(nodeId) {
   const key = KEY_GATES[nodeId];
   if (!key) return true;
   if (carriesKey(key)) return true;
-  return Boolean(game.isLockUnlocked && game.isLockUnlocked(nodeId));
+  return Boolean(game.hasHeldKey && game.hasHeldKey(key));
 }
 
 /** 缺哪把钥匙（门槛已过返回 null）—— main.js 用它决定拦不拦这次移动 */
@@ -286,12 +287,26 @@ export function missingKeyFor(nodeId) {
   return isKeyGateOpen(nodeId) ? null : (KEY_GATES[nodeId] || null);
 }
 
-/** 三把锁的 id 清单（不判断状态）—— main.js 的 syncKeyLocks 用它逐个登记解锁 */
+/**
+ * 这个门槛是不是「只拦走进去这一下」的移动门（渡口）。
+ * 三把锁返回 false —— 它们没钥匙时渲染成「已访问 + 不可达」的假象（v1.9.0b4.1 改动 3），
+ * 点了和别的 blocked 节点一样静默，所以 main.js 只对移动门输出那句渡口文案。
+ */
+export function isMoveGate(nodeId) {
+  return Boolean(MOVE_GATES[nodeId]);
+}
+
+/** 三把锁的 id 清单（不判断状态） */
 export function keyLockNodeIds() {
   return Object.keys(KEY_LOCKS);
 }
 
-/** 还没解锁的三把锁（渡口不算：它不靠解锁、每次都现场验钥匙） */
+/** 全部钥匙门槛的节点 id 清单（三把锁 + 渡口）—— main.js 的 syncKeyLocks 用它逐个登记拿到过的钥匙 */
+export function keyGateNodeIds() {
+  return Object.keys(KEY_GATES);
+}
+
+/** 还没解锁的三把锁（渡口不算：它不在 KEY_LOCKS 里） */
 export function keyLockedNodeIds() {
   return Object.keys(KEY_LOCKS).filter((id) => !isKeyGateOpen(id));
 }
@@ -1619,10 +1634,16 @@ function renderArea(regionId) {
      所以既不显示名字（不泄露没走过的地图），又明显区别于可点的琥珀菱形。
      v1.9.0b3 改动 3：还带一个解锁门槛 —— 未解锁的节点（禁区）完全不渲染、不可点，
      解锁条件满足后自动回到下面这套常规判定（当前节点自己例外，免得人站在上面却看不见自己）。 */
+  /* v1.9.0b4.1 改动 3（接上一条）：三把锁（KEY_LOCKS）没钥匙时不再隐藏，
+     而是伪装成「已访问 + 不可达」的灰虚线（is-blocked）—— 玩家看得见那里有一把锁、
+     知道过不去，但既不能点、也不显示额外信息（与其它 blocked 节点完全同一套样式）。 */
   const stateOf = (id) => {
-    if (id !== here && !isNodeUnlocked(id)) return null;   /* 未解锁：连形态都不给（机制 A 之外的门槛） */
+    /* 未解锁：连形态都不给（机制 A 之外的门槛）。三把锁是唯一例外，见下面那一条 */
+    if (id !== here && !isNodeUnlocked(id) && !KEY_LOCKS[id]) return null;
     if (!inSight(id)) return null;                      /* 没电被隐藏：不可点，也没有悬浮提示 */
     if (here && id === here) return 'current';          /* 当前位置：有标识，不参与可点性判断 */
+    /* v1.9.0b4.1 改动 3：三把锁还没开 → 一律画成「已访问 + 不可达」的灰虚线假象 */
+    if (id !== here && KEY_LOCKS[id] && !isKeyGateOpen(id)) return 'blocked';
     if (isNodeBlockedByDarkness(id)) return 'darkblock';
     if (visited.has(id)) return reachable.has(id) ? 'visited' : 'blocked';
     /* 【正式机制 A】未访问：只有与当前节点直接相邻才显示菱形；没有当前节点时退回旧规则 */

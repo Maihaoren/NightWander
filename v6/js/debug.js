@@ -1,14 +1,15 @@
-﻿/**
+/**
  * debug.js —— debug 指令解析与执行
  * 只解析 "/xxx" 指令、读写传进来的 state、必要时调 ctx 里的动作；不碰渲染细节。
  * 仅在 config.DEBUG_CONSOLE === true 时由 main.js 调用（默认关闭，模块加载但不执行）。
  */
 
 import { BATTERY_MAX, STORAGE_CAPACITY, EVENTS_DEFAULT, GAME_VERSION, DEBUG_CONSOLE } from './config.js';
+import { ITEMS } from './texts.js';
 
 /** 所有指令名（不带 "/"），供终端 Tab 补全使用 */
 export function getAllCommandNames() {
-  return ['time', 'day', 'stamina', 'staminaMax', 'battery', 'storage', 'unlockall', 'goto', 'area', 'event', 'version', 'help'];
+  return ['time', 'day', 'stamina', 'staminaMax', 'battery', 'storage', 'unlockall', 'give', 'goto', 'area', 'event', 'version', 'help'];
 }
 
 const HELP = [
@@ -28,6 +29,7 @@ const HELP = [
   '/storage set {n}     设置「当前节点所在储物箱」的容量（>=0）',
   '/storage add {n}     同上，容量 +n',
   '/unlockall           把当前区域的所有节点标记为已访问（不跨区域、不消耗任何资源）',
+  '/give {itemId} {n}   把 n 件指定物品塞进背包（n 省略 = 1；不看容量、不消耗任何资源；id 写错会列出全部 id）',
   '/event on|off|reset  开关随机事件系统（reset = 回到默认，并清空「已触发过的事件」）',
   '/event hover [on|off] 选项按钮上是否悬浮显示该选项效果（不带参数 = 看当前状态）',
   '/event trigger {id}  强制触发指定事件（无视开关、几率与「已触发过」，测试入口）',
@@ -46,6 +48,7 @@ const USAGE = {
   goto: '/goto {nodeId}（/goto help 列出当前区域的节点）',
   area: '/area list 或 /area goto {areaId}',
   unlockall: '/unlockall（无参数）',
+  give: '/give {itemId} [数量]（数量省略 = 1，必须是正整数）',
   event: '/event {on|off|reset|hover|trigger|help}',   /* 用法提示固定为这一句 */
   version: '/version',
 };
@@ -281,6 +284,42 @@ function execute(input, state, ctx) {
           '，已触发记录已清空'}）${tail}`;
       }
       return (next ? '随机事件系统：已开启' : '随机事件系统：已关闭') + tail;
+    }
+
+    /**
+     * /give {itemId} [数量] —— v1.9.0b4.1 改动 10（调试入口）。
+     *
+     * 直接把物品塞进背包，方便测试钥匙门槛、终局这些要走很远才到得了的东西：
+     *   - 不消耗任何资源（不经过 advanceTime / spendStamina / spendBattery）
+     *   - 不看容量（调试入口，口袋该满还是满），也不动物品栏以外的任何状态
+     *   - 数量省略 = 1；给了非法数量（0 / 负数 / 小数 / 非数字）一律拒绝，不做四舍五入
+     *   - 未知 id 会把全部可用 id 列出来，免得猜
+     * 具体往哪放由 main.js 的 ctx.giveItem 负责（口袋优先），这里只解析与措辞。
+     */
+    case '/give': {
+      const id = String(tokens[1] || '').trim().toLowerCase();
+      if (!id) return `参数错误。用法：${usage}`;
+
+      const item = ITEMS[id];
+      if (!item) {
+        return [
+          `未知物品 id：${id}`,
+          `可用物品 id：${Object.keys(ITEMS).join(' / ')}`,
+        ].join('\n');
+      }
+
+      let count = 1;
+      if (tokens[2] !== undefined) {
+        const n = Number(tokens[2]);
+        if (!Number.isInteger(n) || n < 1) return '数量必须是正整数。';
+        count = n;
+      }
+
+      if (typeof ctx.giveItem !== 'function' || !ctx.giveItem(id, count)) {
+        return '当前无法给予物品。';
+      }
+      const line = `已给予 ${item.name} ×${count}`;
+      return DEBUG_CONSOLE ? `${line} [debug] give ${id} ×${count}` : line;
     }
 
     case '/version': {

@@ -14,7 +14,7 @@
 
 | 编号 | 定义位置 | 当前值 | 含义 |
 |---|---|---|---|
-| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b4` | 面向玩家的游戏版本 |
+| `GAME_VERSION` | `v6/js/config.js` | `v1.9.0b4.1` | 面向玩家的游戏版本 |
 | `VERSION` | `v6/js/saveSystem.js` | `4` | **存档结构**版本 |
 
 两者独立递增：游戏版本升了但存档结构没变，`VERSION` 就不用动；反之亦然。
@@ -36,6 +36,102 @@
 （下一次开发从这里开始写。当前没有进行中的改动。）
 
 ---
+
+## [v1.9.0b4.1] — 2026-10-11 —— 重发的 b4 需求：锁改成「看得见、点不动」+ 永久解锁改记钥匙 id + /give + 移动耗时再 ×1.5
+
+**回档点 / git 标签**：`v1.9.0b4.1`（`v1.9.0b4` 已经发过版，标签不动，本版是它上面的一层修订）。
+
+> 存档结构版本号**不变（仍是 v4）**。字段表 **22 → 21 个键**：删掉 `unlockedLocks`（节点 id）与
+> `gameOverReason`，新增 `everHeldKeys`（钥匙 id）。三个字段都按老规矩「缺失补默认值」，
+> 所以 v4 旧档照样能读 —— **旧档里已经开过的锁会退回「要重新拿到钥匙」**（旧字段读不出来，不迁移）。
+> 无迁移、无报错，只提示版本过旧的那套口径没动。
+
+### 变更
+
+- **改动 3：三把锁不再「没钥匙就完全不渲染」，改成画成「已访问 + 不可达」的灰虚线假象。**
+  - `v6/js/map.js` `renderArea()` 内的 `stateOf(id)`：未解锁判定从
+    `if (id !== here && !isNodeUnlocked(id)) return null;` 改成
+    `if (id !== here && !isNodeUnlocked(id) && !KEY_LOCKS[id]) return null;`，
+    并在 `here` 那一条之后新增
+    `if (id !== here && KEY_LOCKS[id] && !isKeyGateOpen(id)) return 'blocked';`。
+  - 也就是：禁区（`LOCKED_NODES`）照旧不渲染；三把锁没钥匙时返回 `'blocked'` —— 复用既有
+    `.is-blocked` 样式（灰描边 + 虚线 + 透明度 0.45），**不新增任何状态类、不动 style.css**。
+    它与「已访问但走不到」的节点在视觉与可点性上完全一致：不绑悬浮提示、点了静默。
+  - 副作用（有意）：三把锁现在**不依赖机制 A 的相邻判定**，站在码头关就能看见
+    `铜锁 → 铁锁 → 金锁` 这条链（含它们之间的路）。
+- **改动 3.4 / 9：永久解锁的载体从「锁的节点 id」换成「钥匙 id」。**
+  - `v6/js/state.js`：字段 `unlockedLocks: Set` → `everHeldKeys: Set`（存钥匙 id）；
+    接口 `isLockUnlocked()` / `markLockUnlocked()` / `getUnlockedLocks()` →
+    `hasHeldKey(keyId)` / `markKeyHeld(keyId)` / `getEverHeldKeys()`（**签名变化**）。
+  - `v6/js/map.js`：`isKeyGateOpen(nodeId)` = `carriesKey(key) || game.hasHeldKey(key)`；
+    新增导出 `isMoveGate(nodeId)`（渡口 = true，三把锁 = false）、`keyGateNodeIds()`（三把锁 + 渡口）；
+    `keyLockNodeIds()` / `keyLockedNodeIds()` 语义不变（仍只管三把锁）。
+  - `v6/js/main.js`：`syncKeyLocks()` 改为遍历 `keyGateNodeIds()`，随身带着哪把钥匙就
+    `game.markKeyHeld(钥匙 id)`；`renderInventory()` 里的调用点不变。
+  - `v6/js/saveSystem.js`：`REQUIRED` 里 `unlockedLocks` / `gameOverReason` → `everHeldKeys`；
+    可选兼容与类型检查同步替换（`everHeldKeys` 必须是数组，否则判无效存档）。
+  - **口径变化**：渡口（`ferry`）与三把锁现在共用这一套 —— 渡口钥匙**经手过一次之后永久有效**，
+    不再要求每次现场带着。这是 `isKeyGateOpen = 携带 或 曾拿到过` 这条统一口径的直接结果。
+- **改动 7.6：结束状态只留一个 `gameOver` 字段。**
+  - `v6/js/state.js`：`setGameOver(value, reason)` → `setGameOver(value)`（**签名变化**）；
+    删掉 `gameOverReason` 字段、快照字段与读档赋值。
+  - `v6/js/main.js`：三条结束路径（体力归零 / 黑暗断电 / 灯塔通关）都改调 `setGameOver(true)`。
+  - `v6/js/saveSystem.js`：`REQUIRED` 与类型检查里去掉 `gameOverReason`。
+- **改动 7.7：灯塔终局只输出「游戏结束！」。**
+  - `v6/js/texts.js`：删掉 `UI.lighthouseWin`（那段胜利描述）。
+  - `v6/js/main.js` `checkLighthouseEnding()`：只 `terminal.log(UI.gameOverLighthouse)`。
+- **改动 11：移动耗时再 ×1.5（相对 b1.1 那版累计 ×2.25）。**
+  - `v6/js/config.js`：`DISTANCE_TO_TIME_RATIO` 4.5 → **6.75**；
+    `DEFAULT_TRAVEL_COST` 1350（22.5 分钟）→ **2025**（33.75 分钟）。
+  - ±10% 抖动（`MOVE_JITTER`）与「预览 / 实际共用同一个随机值」的缓存机制都没动；
+    `SECONDARY_ROAD_PENALTY = 1.4`、`CROSS_REGION_COST_SEC = 3600` 也没动。
+
+### 新增
+
+- **改动 10：调试指令 `/give {itemId} [数量]`**（`v6/js/debug.js`）。
+  - 用法：`/give 物品id [数量]`，数量省略 = 1，必须是正整数；给了 0 / 负数 / 小数 / 非数字回
+    `数量必须是正整数。`（不做四舍五入）；id 不存在回 `未知物品 id：xxx` + 一行全部可用 id。
+  - 成功回 `已给予 {物品名} ×{数量}`，`DEBUG_CONSOLE` 打开时追加 ` [debug] give {itemId} ×{数量}`
+    （与 `/unlockall` 的写法一致）。
+  - 物品不消耗任何资源（不推时间 / 不扣体力电量）、**不看容量**（口袋满了照给）、
+    不动节点物品列表与「已拾取」标记；给一把钥匙会立刻让对应门槛算「拿到过」。
+  - 落袋动作在 `v6/js/main.js` 新增的 `debugContext.giveItem(itemId, count)`；`debug.js` 只解析与措辞——
+    为此 `debug.js` 新增 `import { ITEMS } from './texts.js'`（此前只依赖 `config.js`）。
+  - `getAllCommandNames()` 与 `/help`、`USAGE` 都补了 `give` 条目。
+  - 游戏结束后与其它调试指令一样被 `handleCommand` 的白名单拦掉（回「游戏已结束。」）。
+
+### 修复
+
+- **点「没钥匙的锁」会冒出一句渡口文案。** 症状：三把锁改成可见之后，点到铜锁 / 铁锁 / 金锁，
+  终端会打印「渡口的铁闸锁着。需要渡口钥匙。」。根因：`travelTo()` 里
+  `if (missingKeyFor(id)) { terminal.log(UI.ferryLocked); return; }` 对两种门槛共用一句文案，
+  而过去锁是隐藏的、根本点不到。修法：`main.js` 只对移动门（`map.isMoveGate(id)`）打印这句，
+  三把锁静默返回 —— 与其它 `blocked` 节点的可点性口径一致（**没有新增任何文案**）。
+
+### 验证
+
+- 新增临时校验脚本 `.tools/nw_b41_check.mjs`（本次六条改动的独立套件，全部通过）：
+  锁的假象形态与可点性、`everHeldKeys` 的登记 / 存档往返 / 旧档兼容 / 类型校验、
+  灯塔终局只有一句话且只有一个 `gameOver` 字段、`/give` 的全部用法与拒绝分支、
+  6.75 / 2025 与「预览实际同一随机值」，外加区域 / 节点 / 物品 / 门槛表回归。
+- 同步改写 `.tools/nw_b4_check.mjs` 里因本版变动的断言：锁从「在不在图上」改成「是什么形态」、
+  `unlockedLocks` → `everHeldKeys`、胜利描述改判为「不存在」、`gameOverReason` 改判为「不存在」、
+  存档字段 22 → 21、耗时系数 4.5 → 6.75，并补了 `/give` 与「点锁静默」两组断言。
+- 老套件里因版本号与耗时系数变动的断言一并更新（`nw_b22_check` / `nw_b23_check` / `nw_b24_check` /
+  `nw_b3_check` / `nw_b2_check` / `nw_b21b_check` / `nw_b11_check`）。
+- 走过的全量套件（全部通过）：`nw_b41_check` / `nw_b4_check` / `nw_b3_check` / `nw_b24_check` /
+  `nw_b23_check` / `nw_b22_check` / `nw_b21b_check` / `nw_b2_check` / `nw_b11_check` / `nw_b1_check` /
+  `nw_r13_check` / `nw_r14_check` / `nw_boot_check` / `nw_ver_check`。
+
+### 已知限制 / 遗留
+
+- 旧存档（v4）里由 `unlockedLocks` 记下的「已开过的锁」**不迁移**：读档后三把锁回到
+  「要重新拿到钥匙」的状态（字段名换了，旧值读不出来）。不报错、不判无效存档。
+- 渡口钥匙的永久性：`isKeyGateOpen` 是三把锁与渡口共用的一条口径，所以渡口钥匙
+  **经手一次之后就永久有效**（b4 的「每次都要现场带着钥匙」不再成立）。若要恢复渡口的口径，
+  改 `map.js` 的 `isKeyGateOpen`（按 `MOVE_GATES` 分流）即可，一处改动。
+- 三把锁现在会显示在地图上（灰色虚线），因此 `灯塔` 前面的关卡顺序变得可见 —— 这是改动 3 的
+  必然结果；`lighthouse` 本身仍按机制 A 只在相邻时出现。
 
 ## [v1.9.0b4] — 2026-10-11 —— 落地码头（三锁 + 灯塔终局）与孤岛（渡口 + 海之家）+ 废城补落物品
 

@@ -16,7 +16,7 @@ import {
   reachableVisited, hasDirectEdge, calcMoveDuration, clearMoveDurationCache, REGIONS, HOME_ID,
   isDarkNode, isNodeBlockedByDarkness, findNearestReachableShelter,
   lockedNodeIds,
-  missingKeyFor, keyGateOf, keyLockNodeIds, keyLockedNodeIds, carriesKey,
+  missingKeyFor, keyGateOf, keyGateNodeIds, carriesKey, isMoveGate,
 } from './map.js';
 import * as terminal from './terminal.js';
 import * as modal from './modal.js';
@@ -252,7 +252,7 @@ function readDocument(doc) {
 }
 
 function renderInventory() {
-  /* v1.9.0b4：随身带着钥匙就把对应的锁记成已开过（物品栏每次变化都会走到这里） */
+  /* v1.9.0b4.1：随身带着钥匙就把那把钥匙记成「拿到过」（物品栏每次变化都会走到这里） */
   syncKeyLocks();
 
   const el = document.getElementById('inventory');
@@ -1045,8 +1045,14 @@ async function travelTo(id) {
      接口节点（墙门 / 北关 / 东关 / 南关）没有 isDark 标记，所以不受这条限制。 */
   if (isNodeBlockedByDarkness(id)) return;
 
-  /* v1.9.0b4 改动 5：渡口这类「有钥匙才给走」的门槛 —— 与黑暗那一条不同：这里要说一句为什么走不了。 */
-  if (missingKeyFor(id)) { terminal.log(UI.ferryLocked); return; }
+  /* v1.9.0b4.1 改动 3 的门槛口径：
+     渡口（移动门）—— 照常渲染成菱形，点了要说一句为什么走不了；
+     三把锁 —— 没钥匙时渲染成「已访问 + 不可达」的灰虚线假象，点了与其它 blocked 节点一样静默返回
+     （不再借用渡口那句文案：铜锁/铁锁/金锁上并没有写着「渡口钥匙」）。 */
+  if (missingKeyFor(id)) {
+    if (isMoveGate(id)) terminal.log(UI.ferryLocked);
+    return;
+  }
 
   /* 可点性：已访问的走「已探明路径连通」，未访问的只看是否与当前节点直接相邻。
      不可点就静默返回 —— 不移动、不扣体力、不推时间、不弹提示 */
@@ -1483,28 +1489,30 @@ function dropItemToNode(item) {
 }
 
 /* ===============================================================
-   v1.9.0b4：钥匙门槛与灯塔终局
+   v1.9.0b4 / v1.9.0b4.1：钥匙门槛与灯塔终局
    ---------------------------------------------------------------
    1. syncKeyLocks()：只要【随身带着】某把钥匙（口袋 / 手持槽 / 装备槽，储物箱不算），
-      就把对应的锁记成「已开过」（state.unlockedLocks 进存档）—— 解锁一旦发生永久保持，
-      之后把钥匙丢掉也不会重新锁上。物品栏每次重绘都会调一次（拿东西/丢东西都会重绘），
-      所以不需要额外挂钩。
+      就把【这把钥匙的 id】记成「拿到过」（state.everHeldKeys 进存档）——
+      门槛一旦开过就永久保持，之后把钥匙丢掉（或塞进储物箱）也不会重新锁上。
+      物品栏每次重绘都会调一次（拿东西/丢东西都会重绘），所以不需要额外挂钩。
    2. checkLighthouseEnding()：到达灯塔 = 通关，输出终局文案并锁死一切操作。
    =============================================================== */
 function syncKeyLocks() {
-  /* 注意遍历的是【全部】三把锁，不是「还没解锁的」那几把 ——
-     带着钥匙时 isKeyGateOpen 已经是 true，用后者的清单会一把都登记不到。 */
-  for (const lockId of keyLockNodeIds()) {
-    const keyId = keyGateOf(lockId);
-    if (keyId && carriesKey(keyId)) game.markLockUnlocked(lockId);
+  /* v1.9.0b4.1 改动 3.4 / 9：登记的是【钥匙 id】，不是锁的节点 id ——
+     「拿到过」这件事发生在钥匙身上，锁的永久解锁由 isKeyGateOpen 从它推导。
+     遍历的是【全部门槛】（三把锁 + 渡口），不是「还没开的」那几把：
+     带着钥匙时 isKeyGateOpen 已经是 true，用后者的清单会一个都登记不到。 */
+  for (const gateId of keyGateNodeIds()) {
+    const keyId = keyGateOf(gateId);
+    if (keyId && carriesKey(keyId)) game.markKeyHeld(keyId);
   }
 }
 
 /**
- * 灯塔终局（v1.9.0b4 改动 7）：到达灯塔 → 输出终局文案 → gameOver。
+ * 灯塔终局（v1.9.0b4 改动 7 / v1.9.0b4.1 改动 7.6-7.7）：到达灯塔 → 输出终局文案 → gameOver。
  * 锁死范围与「体力归零 / 黑暗断电」两条结束路径完全一致（都由 isGameOver() 那套拦截
- * 加 handleCommand 的白名单负责），区别只在 gameOverReason：
- *   'stamina' 体力归零 / 'battery' 黑暗断电 / 'lighthouse' 通关。
+ * 加 handleCommand 的白名单负责），状态里只留一个 gameOver 字段（不再记结束原因）。
+ * 输出只有一句「游戏结束！」，v1.9.0b4.1 起不再补胜利描述段落。
  * 注意【不锁终端输入】—— 按需求结束后还允许输入 /version 与 /help，
  * 由 handleCommand 拦掉其它指令（提示「游戏已结束。」）。
  * @returns {boolean} 是否触发了终局
@@ -1513,9 +1521,8 @@ function checkLighthouseEnding(node) {
   if (!node || node.id !== LIGHTHOUSE_ID) return false;
   if (game.isGameOver()) return false;
 
-  game.setGameOver(true, 'lighthouse');
-  terminal.log(UI.gameOverLighthouse);               /* 游戏结束！ */
-  terminal.log(UI.lighthouseWin);                    /* 一段胜利描述 */
+  game.setGameOver(true);
+  terminal.log(UI.gameOverLighthouse);               /* 游戏结束！（只此一句） */
   time.stopClock();                                  /* 状态栏时间停住 */
   refreshButtons();                                  /* 选项按钮清空（availableOptions 在结束时返回 []） */
   renderStatusBar();
@@ -1819,7 +1826,7 @@ async function onForceHome(reason) {
 
   if (game.getStaminaMax() <= STAMINA_MIN) {         /* 6 走不动了：先结算，再 gameOver */
     settleNight();                                   /* a) 天数 +1、时间归零、体力回满（回电看落点是不是 home） */
-    game.setGameOver(true, 'stamina');               /* b) 记上结束原因（与灯塔通关区分） */
+    game.setGameOver(true);                          /* b) 结束（v1.9.0b4.1 起不再记结束原因） */
     terminal.log(UI.gameOverStamina);                /* c) "你已经精疲力尽，再也走不动了。游戏结束。" */
     time.stopClock();                                /* d) 停止时钟 */
     /* d2) v1.9.0b4：不再 setLocked(true) —— 结束后按需求还允许 /version 与 /help，
@@ -1904,7 +1911,7 @@ function onBatteryCollapse() {
 
   /* 3 再判断 gameOver（沿用原顺序）。体力上限没被扣，所以只有本来就已经触底才可能成立 */
   if (game.getStaminaMax() <= STAMINA_MIN) {
-    game.setGameOver(true, 'battery');               /* v1.9.0b4：黑暗断电导致的结束 */
+    game.setGameOver(true);                          /* v1.9.0b4：黑暗断电导致的结束 */
     terminal.log(UI.gameOverStamina);
     time.stopClock();
     /* v1.9.0b4：同样不锁终端（白名单在 handleCommand 里） */
@@ -2075,6 +2082,23 @@ const debugContext = {
   clearTriggeredEvents: () => game.clearTriggeredEvents(),
   /** /event trigger 前的准入检查：游戏结束 / 有弹窗没处理 / 正在移动 都拒绝 */
   canTriggerEvent: () => !game.isGameOver() && !isFlowBusy(),
+  /**
+   * /give 用（v1.9.0b4.1 改动 10）：把 count 件 itemId 塞进背包。
+   * 调试入口，所以【不看容量】—— 全部放进口袋（口袋放不进去的极端环境才退回手持槽）。
+   * 不消耗任何资源、不动节点物品列表与「已拾取」标记（给的是额外几件，不是从节点上拿的）。
+   * 这里不做校验：id 是否存在、数量是否合法都由 debug.js 先判好。
+   */
+  giveItem: (itemId, count) => {
+    const item = ITEMS[itemId];
+    if (!item) return false;
+    const n = Math.max(1, Math.floor(Number(count) || 1));
+    if (Array.isArray(game.getPocket())) {
+      for (let i = 0; i < n; i += 1) game.addToPocket({ ...item });
+    } else {
+      game.setEquippedSlot('hand', { ...item });
+    }
+    return true;
+  },
   /** 强制触发（无视开关与几率，DEBUG_CONSOLE 下才有入口）；走与自然触发完全一致的事件流程 */
   triggerEvent: (id) => {
     const event = events.getEvent(id);
