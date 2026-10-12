@@ -744,19 +744,23 @@ function spawnItemOnNode(node, itemId) {
 }
 
 /* ===============================================================
-   荒野的纯负面遭遇（v1.9.0b3.1 改动 7）
+   荒野的纯负面遭遇（v1.9.0b3.1 改动 7；v1.9.0b3.2 改动 1 补齐输出分工）
    ---------------------------------------------------------------
    挂在地点上的「到达即弹窗」强制二选一（哪些节点挂见 map.js 的 NEGATIVE_EVENT_BY_NODE）。
    两个选项都不划算：一个失体力（-2）、一个失时间（+600 秒）。
-   - 弹窗标题留空、没有关闭按钮、没有底部按钮 → 必须选一个
-   - 期间时间暂停（走既有 withTimePaused），与事件 / 拾取 / mustResolve / 安全屋弹窗 await 串行
-   - once：选完之后把节点 id 记进 state.triggeredNegativeEvents（进存档），离开再回来不再弹
-   - 终端不额外输出：叙事全在弹窗里（与资源交换不同，交换会往终端补一句 narrate）
+
+   v1.9.0b3.2：b3 落地时漏接了输出通道（选完什么都不显示），现在按 v1.8.14 定下的分工补齐，
+   与 runEventFlow（随机事件）完全一致：
+     1. 选完 → 先执行 effect
+     2. 终端输出该选项的 narrate（描述性叙事）
+     3. 结果弹窗显示该选项的 effectText（系统信息：玩家得失），只有「继续」一个按钮
+     4. 选择窗 + 结果窗整段共用一次 withTimePaused：期间时间一直暂停、终端一直不接收输入
+   其余不变：标题留空、没有关闭按钮、必须二选一；once 记在 state.triggeredNegativeEvents。
    =============================================================== */
-const NEGATIVE_EFFECTS = {
-  stamina: { stamina: -2 },      /* 硬着头皮冲过去：体力 -2 */
-  time: { seconds: 600 },        /* 绕路慢慢挪：时间 +600 秒 */
-};
+const NEGATIVE_EFFECTS = [
+  { stamina: -2 },      /* options[0]：失体力（硬冲 / 硬钻 / 拔腿就跑 …） */
+  { seconds: 600 },     /* options[1]：失时间（绕路 / 走远路 …） */
+];
 
 /**
  * 到达一个挂了负面遭遇的地点时的强制二选一。由 arriveAt 在资源选项行之后调用。
@@ -772,34 +776,64 @@ async function resolveNegativeEvent(node) {
   /* once：这个地点的遭遇已经出现过（存档里记着）→ 不再弹 */
   if (game.isNegativeEventTriggered(node.id)) return false;
 
-  const picked = await withTimePaused(() => modal.showModal({
-    title: '',                                   /* 标题留空（沿用资源交换弹窗的写法） */
-    desc: ev.desc,
-    items: [
-      { id: 'push', text: ev.options[0] },       /* 选项一：失体力 */
-      { id: 'detour', text: ev.options[1] },     /* 选项二：失时间 */
-    ],
-    actions: [],                                 /* 没有底部按钮：必须从两项里选一个 */
-  }));
+  /* 时间推进（失时间那一支）可能跨过 06:00：先压住天亮流程，
+     等两个弹窗都关掉之后再补一次，免得天亮传送/结算插进弹窗中间（同 runEventFlow）。 */
+  suppressNightEnd = true;
+  try {
+    /* 整段（选择窗 → 效果 → 叙事 → 结果窗）共用一个 withTimePaused：
+       期间时间一直暂停、终端一直锁输入，直到流程结束才恢复。 */
+    await withTimePaused(async () => {
+      const picked = await modal.showModal({
+        title: '',                                   /* 标题留空（沿用资源交换弹窗的写法） */
+        desc: ev.desc,
+        items: ev.options.map((option, index) => ({ id: index, text: option.label })),
+        actions: [],                                 /* 没有底部按钮：必须从两项里选一个 */
+      });
 
-  /* 没有别的关闭途径，理论上一定拿得到选项；拿不到（被外部关掉）就不打标记，下次再弹 */
-  if (!picked || picked.type !== 'item') return false;
+      /* 没有别的关闭途径，理论上一定拿得到选项；拿不到（被外部关掉）就不打标记，下次再弹 */
+      if (!picked || picked.type !== 'item') return;
 
-  game.markNegativeEventTriggered(node.id);
+      const index = Number(picked.id);
+      const option = ev.options[index];
+      const fx = NEGATIVE_EFFECTS[index];
+      if (!option || !fx) return;
 
-  const fx = picked.id === 'push' ? NEGATIVE_EFFECTS.stamina : NEGATIVE_EFFECTS.time;
-  if (fx.stamina) game.spendStamina(-fx.stamina);     /* 取负：正数表示加体力，自带上限夹取 */
-  if (fx.seconds) time.advanceTime(fx.seconds);
-  if (!batteryCollapsed) onBatteryCollapse();         /* 时间推进可能把电走干（沿用既有检测） */
+      game.markNegativeEventTriggered(node.id);      /* once：这一处不再出现 */
 
-  renderStatusBar();
-  renderInventory();
-  refreshButtons();
+      /* 1 先执行效果（数值在 NEGATIVE_EFFECTS，文案在 texts.js） */
+      if (fx.stamina) game.spendStamina(-fx.stamina);   /* 取负：正数表示加体力，自带上限夹取 */
+      if (fx.seconds) time.advanceTime(fx.seconds);
+      if (!batteryCollapsed) onBatteryCollapse();       /* 时间推进可能把电走干（沿用既有检测） */
+
+      /* 2 终端 = 叙事流：只补描述性文本 */
+      if (option.narrate) terminal.log(option.narrate);
+
+      /* 效果可能改了体力 / 电量 / 时间，先重绘一次再弹结果窗 */
+      renderStatusBar();
+      renderInventory();
+      refreshButtons();
+
+      /* 3 结果窗 = 系统信息：只有 effectText + 一个「继续」按钮 */
+      await modal.showModal({
+        title: UI.eventResultTitle,
+        desc: option.effectText,
+        items: [],
+        actions: [{ text: UI.eventContinue, value: 'continue' }],
+      });
+    });
+  } finally {
+    suppressNightEnd = false;
+  }
+
+  /* 效果把时间推过了 06:00：这时才补一次天亮流程（顺序晚于两个弹窗） */
+  if (nightEnded) {
+    nightEnded = false;
+    onNightEnd();
+  }
   return true;
 }
 
-/**
- * 【到达自动弹窗】的「本次停留已弹过」守卫（v1.9.0b2.1 立、v1.9.0b2.2 起只剩安全屋在用）。
+/** * 【到达自动弹窗】的「本次停留已弹过」守卫（v1.9.0b2.1 立、v1.9.0b2.2 起只剩安全屋在用）。
  *
  * 记「本次停留里已经弹过安全屋弹窗的节点 id」，清空点是 visitNode()（玩家真的换了节点）：
  *   - 移动 / 强制回家 / debug 传送：都会先 visitNode → 清空 → 到达时重新弹 ✓
